@@ -1,0 +1,327 @@
+:root {
+  --bg: #0b0e14;
+  --panel: #141922;
+  --panel-hi: #1b2230;
+  --line: #26303f;
+  --text: #e8eef7;
+  --dim: #8494a8;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --accent: #3d8bfd;
+  --accent-hi: #66a6ff;
+  --r: 14px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Stop the page rubber-banding under a finger that slides off a control. */
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+body {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: max(10px, env(safe-area-inset-top)) 14px
+           max(14px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.cap {
+  display: block;
+  font-size: 10px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 1px;
+}
+.metric, b { font-variant-numeric: tabular-nums; font-weight: 650; }
+
+/* --- status bar ---------------------------------------------------------- */
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.spacer { flex: 1; }
+.dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex: none;
+  box-shadow: 0 0 0 0 currentColor;
+}
+.dot.ok   { background: var(--ok);   box-shadow: 0 0 10px #3fb95088; }
+.dot.warn { background: var(--warn); }
+.dot.bad  { background: var(--bad);  box-shadow: 0 0 10px #f8514988; }
+#state {
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: .08em;
+  font-weight: 700;
+}
+#battery { color: var(--dim); font-size: 14px; }
+#battery.low { color: var(--bad); }
+
+#message {
+  margin: 0 4px;
+  min-height: 1.35em;
+  color: var(--dim);
+  font-size: 12.5px;
+}
+
+/* --- ranger readout ------------------------------------------------------ */
+#radar {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 12px 14px 14px;
+}
+.ceiling {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.ceiling .cap { margin: 0; }
+.grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-areas: ". f ." "l d r" ". b .";
+  gap: 4px 14px;
+  place-items: center;
+}
+.cell { text-align: center; min-width: 58px; }
+.cell.f { grid-area: f; } .cell.b { grid-area: b; }
+.cell.l { grid-area: l; } .cell.r { grid-area: r; }
+
+/* Little quad seen from above, nose pointing up the page. */
+.craft {
+  grid-area: d;
+  position: relative;
+  width: 30px; height: 30px;
+  border: 2px solid var(--accent);
+  border-radius: 7px;
+  transition: border-color .18s, box-shadow .18s;
+}
+.craft .nose {
+  position: absolute;
+  left: 50%; top: -7px;
+  width: 0; height: 0;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 6px solid var(--accent);
+  transition: border-bottom-color .18s;
+}
+.craft.warn { border-color: var(--bad); box-shadow: 0 0 14px #f8514955; }
+.craft.warn .nose { border-bottom-color: var(--bad); }
+b.near { color: var(--bad); }
+
+/* --- controls ------------------------------------------------------------ */
+#controls {
+  display: flex;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: 340px;
+}
+
+/* Vertical height slider. */
+.slider {
+  position: relative;
+  flex: 0 0 33%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  /* The control owns its gestures; the browser must not scroll or zoom. */
+  touch-action: none;
+}
+.slider .fill {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 0;
+  background: linear-gradient(to top, #3d8bfd18, #3d8bfd3a);
+}
+/* Where the drone actually is, versus where the handle asks it to be. */
+.slider .actual {
+  position: absolute;
+  left: 0; right: 0;
+  height: 0;
+  border-top: 1px dashed #8494a8aa;
+}
+.slider .actual i {
+  position: absolute;
+  right: 5px; top: -13px;
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: .06em;
+  color: var(--dim);
+}
+.slider .actual i::before { content: "now"; }
+.slider .handle {
+  position: absolute;
+  left: 7px; right: 7px;
+  height: 38px;
+  margin-bottom: -19px;
+  border-radius: 10px;
+  background: var(--accent);
+  box-shadow: 0 2px 8px #0009;
+  transition: background .15s;
+}
+.slider.active .handle { background: var(--accent-hi); }
+.slider .handle::after {
+  content: "";
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 24px; height: 2px;
+  transform: translate(-50%, -50%);
+  background: #ffffff99;
+  border-radius: 1px;
+}
+.slider .readout {
+  position: absolute;
+  top: 10px; left: 0; right: 0;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fly pad: vertical = forward/back, horizontal = turn. */
+.pad {
+  position: relative;
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  touch-action: none;
+  overflow: hidden;
+}
+.crosshair { position: absolute; inset: 0; }
+.crosshair::before, .crosshair::after {
+  content: "";
+  position: absolute;
+  background: var(--line);
+}
+.crosshair::before { left: 50%; top: 14%; bottom: 14%; width: 1px; }
+.crosshair::after  { top: 50%; left: 14%; right: 14%; height: 1px; }
+
+.knob {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 76px; height: 76px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 2px 10px #0009;
+  transition: background .15s;
+}
+.pad.active .knob { background: var(--accent-hi); }
+.knob::after {
+  content: "";
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 12px; height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #ffffffaa;
+}
+
+.axis-cap {
+  position: absolute;
+  font-size: 10px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.axis-cap.top    { top: 10px;  left: 50%; transform: translateX(-50%); }
+.axis-cap.bottom { bottom: 26px; left: 50%; transform: translateX(-50%); }
+.axis-cap.left   { left: 10px;  top: 50%; transform: translateY(-50%); font-size: 17px; }
+.axis-cap.right  { right: 10px; top: 50%; transform: translateY(-50%); font-size: 17px; }
+
+.ctl-label {
+  position: absolute;
+  left: 0; right: 0; bottom: 8px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.slider.disabled, .pad.disabled { opacity: .3; }
+
+/* --- buttons ------------------------------------------------------------- */
+#buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+button {
+  padding: 15px 8px;
+  font: inherit;
+  font-weight: 650;
+  color: var(--text);
+  background: var(--panel-hi);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  /* Comfortably above the 44px minimum touch target. */
+  min-height: 54px;
+}
+button:active { background: #2a3444; transform: scale(.985); }
+button:disabled { opacity: .3; }
+button.wide { grid-column: 1 / -1; }
+button.toggle.on {
+  border-color: var(--ok);
+  color: var(--ok);
+  background: #3fb9501a;
+}
+button.danger {
+  border-color: #6e2b2b;
+  color: #ff8a80;
+  background: #f851491a;
+  letter-spacing: .06em;
+}
+button.danger:active { background: #f8514933; }
+
+.minor {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+button.subtle {
+  min-height: 42px;
+  padding: 10px 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--dim);
+  background: transparent;
+}
+
+/* Short screens: give the controls the room instead of the readouts. */
+@media (max-height: 680px) {
+  #radar { padding: 8px 12px 10px; }
+  .ceiling { padding-bottom: 7px; margin-bottom: 5px; }
+  #controls { min-height: 168px; }
+  button { min-height: 48px; padding: 12px 8px; }
+}

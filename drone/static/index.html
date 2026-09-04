@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Crazyflie control</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header id="bar">
+  <span id="dot" class="dot"></span>
+  <span id="state">connecting</span>
+  <span class="spacer"></span>
+  <span id="battery" class="metric">—</span>
+</header>
+
+<p id="message">Starting up</p>
+
+<section id="radar" aria-label="Multi-ranger distances">
+  <div class="ceiling">
+    <span class="cap">ceiling</span>
+    <b id="r-up">—</b>
+  </div>
+  <div class="grid">
+    <div class="cell f"><span class="cap">front</span><b id="r-front">—</b></div>
+    <div class="cell l"><span class="cap">left</span><b id="r-left">—</b></div>
+    <div class="craft" id="craft">
+      <span class="nose"></span>
+    </div>
+    <div class="cell r"><span class="cap">right</span><b id="r-right">—</b></div>
+    <div class="cell b"><span class="cap">back</span><b id="r-back">—</b></div>
+  </div>
+</section>
+
+<section id="controls">
+  <div class="slider" id="slider-height"
+       role="slider" aria-label="Target height"
+       aria-valuemin="0" aria-valuemax="2" aria-valuenow="0">
+    <div class="fill"></div>
+    <div class="actual" id="height-actual"><i></i></div>
+    <div class="handle"></div>
+    <span class="readout" id="height-value">—</span>
+    <span class="ctl-label">height</span>
+  </div>
+
+  <div class="pad" id="pad-fly" aria-label="Forward and turn joystick">
+    <span class="axis-cap top">fwd</span>
+    <span class="axis-cap bottom">back</span>
+    <span class="axis-cap left">&#8634;</span>
+    <span class="axis-cap right">&#8635;</span>
+    <div class="crosshair"></div>
+    <div class="knob"></div>
+    <span class="ctl-label">fly / turn</span>
+  </div>
+</section>
+
+<section id="buttons">
+  <button id="btn-takeoff">Take off</button>
+  <button id="btn-land">Land</button>
+  <button id="btn-auto" class="toggle">Auto wall-avoid</button>
+  <button id="btn-avoid" class="toggle on">Avoidance on</button>
+  <button id="btn-estop" class="wide danger">EMERGENCY STOP</button>
+  <div class="minor">
+    <button id="btn-connect" class="subtle">Connect</button>
+    <button id="btn-recover" class="subtle">Recover after stop</button>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

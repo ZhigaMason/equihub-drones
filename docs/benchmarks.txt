@@ -1,0 +1,305 @@
+# Active Perception Benchmarks — Landscape Review
+
+*Compiled September 2026. Scoped toward indoor active mapping, semantic scene understanding, and budget-constrained object search, with an eye to nano-drone deployment.*
+
+---
+
+## How to read this
+
+"Active perception" is not one benchmark community. It's at least six, and they don't cite each other much. The clusters below differ in what they actually score:
+
+| Cluster | Scores | Maturity |
+|---|---|---|
+| Active mapping / exploration | Geometric surface coverage | Mature, large-scale |
+| Active EQA | Answer correctness (± evidence consistency) | Mature, crowded |
+| Next-best-view | Object-level reconstruction completeness | Mature, narrow |
+| Change & lifelong | Relocalization / sequential search success | Fragmented |
+| Informative path planning | Uncertainty reduction under budget | **No standard benchmark** |
+| Active SLAM | — | **No standard benchmark** |
+
+The recurring structural fact: **nothing scores the quality of the semantic map an agent builds while exploring.** Coverage benchmarks ignore semantics; EQA benchmarks treat the map as invisible instrumentation. That is the gap.
+
+---
+
+## 1. Active mapping and exploration
+
+### GLEAM-Bench — ICCV 2025 · [arXiv 2505.20294](https://arxiv.org/abs/2505.20294) · [github.com/zjwzcx/GLEAM](https://github.com/zjwzcx/GLEAM)
+
+The current best-in-class option. 1,152 scenes drawn from ProcTHOR, HSSD (synthetic) and Gibson, Matterport3D (real-scan), curated for near-watertight geometry, ≥10 floorplan types, and complex interconnectivity. Connected to Isaac Gym for parallel simulation at ~150 FPS on an RTX 3090, trainable on 512 scenes simultaneously. Split: 1,024 train / 128 eval.
+
+**What's interesting:** the motivating negative result. They trained ANS and OccAnt on 32 twelve-room scenes; the models performed well on 10-room scenes but *failed on simpler 5-room ones*. This retroactively undermines most pre-2025 active mapping numbers, which were trained and evaluated on 13–20 scenes. Any comparison against pre-GLEAM baselines needs this caveat.
+
+**Release contents:** meshes (`obj/`), ground-truth surface points (`gt/`), asset indexing files (`urdf/`).
+
+**Relevance:** highest. Their scene curation is reusable as a "suitable for an exploring agent" filter even if you don't use their task or metrics.
+
+---
+
+### AiMDoom / NextBestPath — ICLR 2025 · [arXiv 2502.05378](https://arxiv.org/abs/2502.05378) · [shiyao-li.github.io/nbp](https://shiyao-li.github.io/nbp/)
+
+A map generator built on the Doom engine, explicitly created because existing indoor datasets have limited geometric complexity and inaccurate ground-truth meshes. Four difficulty tiers (Simple / Normal / Hard / Insane) by scene size and connectivity, 100 scenes each. The NBP method predicts long-term goals rather than myopic next-views.
+
+**What's interesting:** the complexity knob. Most benchmarks give you a fixed difficulty distribution; AiMDoom lets you sweep it, which turns "does this policy generalise" into a measurable curve rather than a binary. Exact GT surfaces, since scenes are generated rather than scanned.
+
+**Trade-off:** visually unrealistic. Fine for planning-algorithm claims, useless for anything involving a real perception frontend.
+
+---
+
+### MAGICIAN — CVPR 2026
+
+Long-horizon active mapping via "Imagined Gaussians" — a predictive 3DGS representation permitting fast coverage-gain evaluation for novel viewpoints inside a tree search. Reports results across indoor and outdoor benchmarks with varying action spaces.
+
+**What's interesting:** the argument that long-horizon planning beats greedy NBV is now being made with a rendering-based gain estimator rather than an occupancy grid. Relevant if you're considering feed-forward reconstruction in the planning loop.
+
+---
+
+### Legacy baselines: ANS, OccAnt, UPEN, NARUTO
+
+Active Neural SLAM (Chaplot et al., ICLR 2020) and Occupancy Anticipation remain the reference baselines everyone reports against. **Read their numbers with the GLEAM caveat above** — they were trained on 20–72 scenes and evaluated on 13–20.
+
+---
+
+## 2. Active embodied question answering
+
+### OpenEQA — A-EQA split (Majumdar et al., 2024)
+
+The de facto standard for active semantic evidence gathering. Common evaluation subset: **184 questions across 54 indoor scenes** from HM3D. Six categories: object recognition, attribute recognition, state recognition, object localization, spatial reasoning, functional reasoning. No predefined navigation goal — the agent designs its own exploration strategy. LLM-based answer scoring.
+
+**What's interesting:** it's genuinely open-vocabulary and human-authored, unlike the rule-based question generation of EQA-v1 / MP3D-EQA / MT-EQA.
+
+**Weakness:** answer correctness doesn't verify the agent actually observed the evidence. A model with strong priors can answer "is there a refrigerator in the kitchen" without looking.
+
+---
+
+### EXPRESS-Bench — [arXiv 2503.11117](https://arxiv.org/abs/2503.11117)
+
+Directly targets the weakness above. Introduces the **Exploration-Answer Consistency (EAC)** metric, which scores alignment between what was explored and what was answered. Also proposes Fine-EQA, a hybrid frontier-based / goal-oriented exploration baseline.
+
+**What's interesting:** EAC is the metric to use if you want to claim your planner is genuinely information-seeking rather than benefiting from language priors. This is the single most reviewer-proof metric in the EQA cluster.
+
+---
+
+### E3VS-Bench — [arXiv 2604.17969](https://arxiv.org/abs/2604.17969)
+
+Embodied 3D Visual Search: **99 scenes reconstructed with 3D Gaussian Splatting, 2,014 question-driven episodes**, agents control viewpoint in full **5-DoF**. Built on the observation that existing EQA benchmarks rely on static observation or constrained egocentric motion and cannot evaluate viewpoint-dependent phenomena — e.g. an attribute readable only from one specific angle.
+
+**What's interesting, and why this matters most for aerial work:** every other indoor benchmark in this document assumes a ground robot constrained to the floor plane. E3VS is the only one whose action space matches a free-flying platform. It also demonstrates that 3DGS reconstruction of real spaces is a viable substrate for a free-viewpoint benchmark — a useful precedent if you build your own.
+
+---
+
+### Others in this cluster
+
+- **HM-EQA** (Explore-EQA) and **MT-HM3D** — additional HM3D-based EQA splits, commonly reported alongside OpenEQA.
+- **FAST-EQA** ([arXiv 2602.15813](https://arxiv.org/abs/2602.15813)) — SOTA on HM-EQA and EXPRESS-Bench with emphasis on inference latency and memory. Relevant to the inference-efficiency thread.
+- **ActiView** ([arXiv 2410.04659](https://arxiv.org/abs/2410.04659)) — active perception for MLLMs without embodiment; restricts the perceptual field and requires the model to zoom/shift. 27 models evaluated.
+- **"An Exam for Active Observers"** / ActiveVision ([arXiv 2607.16165](https://arxiv.org/abs/2607.16165)) — 17 tasks across three cognitive axes. Human participants average **96.1%, roughly 9× the best model's accuracy**, and increased reasoning effort barely narrows the gap. Useful for calibrating what a VLM can be expected to do before you put it on a drone.
+- **CityEQA** ([arXiv 2502.12532](https://arxiv.org/abs/2502.12532)) — outdoor/urban EQA, hierarchical LLM agent.
+
+---
+
+## 3. Next-best-view / active reconstruction
+
+### GenNBV — CVPR 2024 · [arXiv 2402.16174](https://arxiv.org/abs/2402.16174)
+
+RL-based NBV policy with multi-source state embedding (geometric + semantic + action). Benchmark built in Isaac Gym on Houses3K and OmniObject3D, testing cross-dataset generalisation to unseen buildings and object categories. Reports ~98% / ~97% coverage ratio on unseen building-scale objects.
+
+### ObjView-Bench — [arXiv 2605.10707](https://arxiv.org/abs/2605.10707)
+
+Revisits difficulty calibration and deployment realism for object-centric view planning — the recognition that prior NBV benchmarks are too easy and too far from robot constraints.
+
+### Neu-NBV (Jin, Chen, Rückin, Popović — IROS 2023)
+
+Uncertainty estimation in image-based neural rendering for view selection. The standard uncertainty-driven baseline, and the connection point between the NBV and IPP literatures.
+
+**Overall assessment of this cluster:** least useful for room-scale flight. Object-centric NBV assumes a hemisphere of candidate viewpoints around a bounded target, which doesn't transfer to exploring an unknown apartment. Worth knowing for citation, not for evaluation.
+
+---
+
+## 4. Change, lifelong operation, and search
+
+*This is the cluster that matters most for a "map → change → search" task design, and it's the most fragmented.*
+
+### 3RScan / RIO — ICCV 2019 · [arXiv 1908.06109](https://arxiv.org/abs/1908.06109)
+
+**1,482 RGB-D scans of ~478 real indoor environments across multiple timesteps.** Dense instance-level semantic segmentation per scan, *plus* ground-truth associations for objects that changed in appearance or location between rescans, with symmetry-aware local alignment. Captured with a handheld Google Tango phone; poses via offline bundle adjustment on fisheye imagery.
+
+**What's interesting:** it remains the only large-scale *real* record of how indoor scenes actually change over time. The empirical change distribution — which categories move, how far, how often, appearance vs. pose — is extractable and can be used to parameterise synthetic change generation.
+
+**Critical limitation:** not navigable. Coverage is whatever a handheld operator happened to scan; there is no navmesh and novel views will be full of holes. **Use it as a change model, not as an environment.**
+
+### RIO10 — [arXiv 2008.02004](https://arxiv.org/abs/2008.02004)
+
+A 10-scene subset of 3RScan repurposed for long-term camera relocalization, selected for high scan frequency (5–12 scans each) and change diversity. Contributes a framework for quantifying appearance, geometric, and semantic change separately.
+
+**What's interesting:** the change taxonomy. If you need to report "change magnitude" as an axis, this is the existing vocabulary to adopt rather than invent.
+
+### ReScene4D — [arXiv 2601.11508](https://arxiv.org/abs/2601.11508)
+
+Temporally consistent semantic instance segmentation on evolving indoor scenes, evaluated on 3RScan. Defines **t-mAP**, extending mAP to reward temporal identity consistency.
+
+**What's interesting:** a metric for "did you keep track of the same object across time" already exists. Reuse rather than reinvent.
+
+---
+
+### AI2-THOR Rearrangement / RoomR — Weihs et al., CVPR 2021
+
+Two-phase structure: a **Walkthrough Phase** in which the agent observes the goal configuration, then the scene is shuffled, then an **Unshuffle Phase** in which the agent restores it. Up to five objects change location or openness. 80 train rooms / 4,000 tasks, 20 val / 1,000, 20 test / 1,000.
+
+**What's interesting, and why it's a novelty hazard:** this is already `map → change → act`, five years old, with a leaderboard. Any new benchmark with that structure will be read as a RoomR variant unless the difference is stated precisely.
+
+**Where it differs from a search-under-budget task:** the walkthrough is free and complete (no mapping budget), the objective is restoration rather than search, the agent is a discrete-action ground robot, and change is guaranteed recoverable.
+
+---
+
+### GOAT-Bench — [arXiv 2404.06609](https://arxiv.org/abs/2404.06609)
+
+Multi-modal **lifelong** navigation on HM3D. Sequential targets specified by category name, language description, or goal image, in a continuous environment without resets. Val splits: 36 scenes × 10 episodes, 5–10 subtasks each (~2,600 subtasks). Metrics: SR and SPL, success within 1 m.
+
+**What's interesting:** the headline finding is that methods with effective memory representations achieve *higher efficiency* than those without — i.e. it's explicitly designed so that reusing a prior map pays off. That's the search-efficiency axis, already with baselines and a protocol.
+
+**What it lacks:** scenes are static. No change axis at all.
+
+---
+
+### Change-Robust Online Spatial-Semantic Topological Mapping — [arXiv 2605.02227](https://arxiv.org/abs/2605.02227)
+
+**Read this one carefully.** Real-robot experiments on relocalization *and* object goal navigation under controlled combinations of appearance change and object rearrangement. Representations for all methods are built from an **identical mapping trajectory** in each scene, deliberately so that success can be attributed to representation robustness rather than planning strategy.
+
+**What's interesting:** they explicitly control away the mapping-strategy variable. That's their declared scope boundary — and therefore the cleanest available gap for work that treats mapping budget as the independent variable.
+
+---
+
+## 5. Informative path planning
+
+**There is no standard benchmark.** The field runs on per-paper baselines: lawnmower/coverage, random, spiral, RIG-tree, CMA-ES.
+
+- **Waterberry Farms** ([arXiv 2305.06243](https://arxiv.org/abs/2305.06243)) — the only dedicated IPP benchmark located. Measures movement-policy / environment-estimator pairs. 2D agricultural field monitoring, so limited transfer to 3D indoor.
+- **IA-TIGRIS** ([arXiv 2502.15961](https://arxiv.org/abs/2502.15961)) — incremental adaptive sampling-based online IPP, with an open-source codebase, simulation environment and testing package explicitly released for community benchmarking. Closest thing to shared infrastructure. Hardware-validated on two UAV platforms.
+
+**Implication:** framing work as AIPP means reviewers will ask what you compared against, and there is no good answer available off the shelf. This is both a hazard and an opening.
+
+---
+
+## 6. Active SLAM
+
+Also no standard benchmark, and the field says so itself. The Placed et al. survey ([arXiv 2207.00254](https://arxiv.org/abs/2207.00254)) notes that evaluation happens in customised simulators or on specialised hardware, that one-to-one comparisons between approaches are rarely made, and that there is a "dire need" for performance metrics beyond exploration time and coverage. Unchanged since 2023.
+
+---
+
+## 7. Aerial
+
+*Almost all outdoor. The indoor aerial benchmark space is close to empty.*
+
+### ActiveFly-Bench — [arXiv 2607.10180](https://arxiv.org/abs/2607.10180)
+
+Three hierarchical tasks: Aerial EQA (reasoning), Fine-grained Language-guided UAV Control (execution), and Observation Behavior Planning (bridging). **7-DoF action space** jointly modelling UAV body and camera gimbal. 10k FLUC trajectories, 2.6k QA pairs, from real and simulated environments — three outdoor scenarios and one indoor. Real UAV deployment demonstrated.
+
+**What's interesting:** baselines are reported as VLM+VLA pairs (GPT-5.4 + π₀-0.5, Gemini-2.5-Pro + OpenVLA), so the model classes are directly comparable to a π₀ / OpenVLA / SmolVLA study. Their failure analysis finds VLMs plan well under distant-blur and peripheral-view conditions but poorly under occlusion and non-frontal orientation.
+
+### FG-EQA / ScoutVLA — [arXiv 2606.14772](https://arxiv.org/abs/2606.14772)
+
+**40K+ simulated and 1K human-piloted real trajectories.** Each episode isolates the *evidence-seeking* phase: the target is already visible at onset but requires a sequence of active viewpoint refinements to answer correctly. Continuous 5-DoF viewpoint control via flow matching.
+
+**What's interesting:** the cleanest separation of "active perception" from "navigation" in the literature. Most benchmarks conflate them; here, finding the object is trivial and the difficulty is entirely in viewpoint selection. Outdoor, but the task formulation is portable.
+
+### IndoorUAV — [arXiv 2512.19024](https://arxiv.org/abs/2512.19024)
+
+First large-scale benchmark targeting UAV-based vision-language navigation in 3D **indoor** environments. 16,040 trajectories / 3.9K instructions / 1,075 scenes drawn from MP3D, Gibson, HM3D and Replica. 4-DoF.
+
+**What's interesting:** it's the indoor aerial simulation substrate, and it demonstrates that the standard indoor scan datasets can be flown rather than driven. Task is navigation, not perception.
+
+### BEDI — [arXiv 2505.18229](https://arxiv.org/abs/2505.18229)
+
+UAV embodied-agent benchmark spanning real–virtual and dynamic–static dimensions, critiquing prior work (OmniDrones, AeroVerse, EmbodiedCity) for simplified virtual environments and single-turn static-image evaluation.
+
+---
+
+## 8. Active manipulation (adjacent)
+
+**ActiveManip-Bench / SaPaVe** — CVPR 2026 · [arXiv 2603.12193](https://arxiv.org/abs/2603.12193). Built on Isaac Sim with a G1 humanoid and a head-mounted active camera. 12 tasks, 100 objects, 20 scenes. Accompanied by ActiveViewPose-200K (200k image-language-camera-movement pairs).
+
+**What's interesting:** their framing claim is that the vast majority of simulation manipulation benchmarks are restricted to fixed camera viewpoints, so there is a "noticeable absence" of benchmarks for evaluating active perception. That's the same gap diagnosis arriving independently from the manipulation side — useful supporting citation.
+
+---
+
+## 9. Scene generation resources
+
+For synthesising scenes or generating controlled change:
+
+| System | Venue | Note |
+|---|---|---|
+| ProcTHOR | NeurIPS 2022 | 10k procedural houses; assets in proprietary format, accessible only via Habitat/Unity |
+| Holodeck | CVPR 2024 · [arXiv 2312.09067](https://arxiv.org/abs/2312.09067) | LLM-guided; can produce multiple variants of the same input with different assets and layouts |
+| HSSD | 2023 | Ships semantic lexicon, per-scene semantic annotations with regions, rigid + articulated (URDF) assets |
+| PhyScene | CVPR 2024 | Physics/interactivity constraints in a conditional diffusion model |
+| Architect | NeurIPS 2024 | Hierarchical 2D inpainting for scene population |
+| InfiniteWorld | 2024 | Holodeck-derived scene generation and editing; OWSMM benchmark |
+| SAGE / SAGE-10k | CVPR 2026 | 10k scenes, 50 room types, 565K unique 3D objects, agentic with a physics critic for simulation-readiness |
+| Infinigen Indoors | CVPR 2024 | Fully procedural, photorealistic |
+
+**Methodological rule:** generate change at the **asset/pose level, never the pixel level.** Inpainting or video-diffusion synthesis of an "after" state destroys the ground truth of what moved and where, which is the entire measurement.
+
+---
+
+## 10. Gap analysis
+
+Three gaps, in descending order of confidence:
+
+**1. Semantic map quality is never the objective.** Coverage benchmarks (GLEAM, AiMDoom) score geometry. EQA benchmarks score answers. ConceptGraphs-style metrics — object finding rate, query success R@k — exist but are only ever applied to *passive replay* of Replica/ScanNet sequences, never to a trajectory the system chose. Combining GLEAM-Bench scenes with ConceptGraphs metrics under a distance budget is a standalone contribution.
+
+**2. Mapping budget is never the independent variable.** RoomR gives a free complete walkthrough. arXiv 2605.02227 fixes the mapping trajectory by design. GOAT-Bench has no change. Nobody asks: *how much exploration should you buy, given the map will be stale when you need it?*
+
+**3. Ground-truth poses everywhere.** Every benchmark listed assumes GT or near-GT localization, which deletes trajectory-length pose degradation as a failure mode. A planner optimised under GT poses will happily select long trajectories that break a feed-forward reconstruction frontend. Injecting a calibrated drift model is a cheap and genuine differentiator.
+
+---
+
+## 11. Repurposing assessment
+
+For a `map (budgeted) → change → search (budgeted)` task:
+
+| Substrate | Semantics | Change | Navigable | Verdict |
+|---|---|---|---|---|
+| **HSSD via Habitat** | Ships natively | Move assets, exact GT | Yes | **Best target** |
+| ProcTHOR | Native | Yes | Yes | Assets proprietary, awkward extraction |
+| GLEAM-Bench meshes | Asset indexing only | No (baked) | Yes | Use as *curation filter*, go to source for semantics |
+| RoomR / AI2-THOR | Full | Built-in shuffle | Yes | **Cheapest path to a first result**; only ~120 rooms |
+| GOAT-Bench | Full | None | Yes | Borrow the goal-specification format |
+| HM3D-Sem | Full | None (baked) | Yes | Static arm only |
+| 3RScan | Full + change GT | Real | **No** | Change model, not environment |
+
+**Key reframe:** for synthetic scenes you are not *adding* semantic annotations — you are recovering semantics that already exist upstream and were discarded during mesh conversion for geometric-coverage evaluation.
+
+**Irreducible gap:** real-scan scenes *with* change. Gibson/MP3D/HM3D meshes are baked; 3RScan isn't navigable. This is the one thing requiring new collection.
+
+Useful plumbing: SceneVerse released preprocessing scripts for 3RScan, MultiScan, ARKitScenes and Structured3D, plus an explicit HM3D object-ID → HM3D-semantics mapping. (MultiScan worth checking independently — the name suggests repeated scans of the same spaces.)
+
+Note that base HSSD scene datasets exclude pickable "clutter" objects; those import separately from e.g. `ovmm_objects`. The small movable items are exactly the ones you'd relocate between phases, and they arrive as a separate controllable library rather than baked into the room.
+
+---
+
+## 12. Metric notes
+
+- **Don't use SPL** for search under a stale partial map. It presumes a known shortest path to a single goal, which is ill-defined when the map may be wrong. It also makes the work look like a GOAT-Bench variant.
+- **Report budget–success curves, not points.** The counterfactual grid — no map / stale map / oracle map, crossed with change magnitude — is the informative object.
+- **Borrow existing metrics where they exist:** EAC (EXPRESS-Bench) for exploration-answer consistency, t-mAP (ReScene4D) for temporal instance identity, RIO10's taxonomy for change magnitude.
+- **Visibility masking is mandatory** for real captures. A handheld GT scan sees objects a fixed forward-facing drone camera cannot. Score recall against the *observable* subset (ray-cast from the reachable flight volume) and report observable fraction separately as a room property.
+
+---
+
+## 13. Reading priority
+
+1. **arXiv 2605.02227** — Change-Robust Online Spatial-Semantic Topological Mapping. Closest existing work on real hardware. Determines project scoping.
+2. **arXiv 2505.20294** — GLEAM. Benchmark design template and the generalisation-failure result.
+3. **arXiv 2604.17969** — E3VS-Bench. Only 5-DoF free-viewpoint indoor benchmark; also a 3DGS substrate precedent.
+4. **arXiv 2503.11117** — EXPRESS-Bench. For the EAC metric.
+5. **arXiv 1908.06109** + **arXiv 2008.02004** — 3RScan / RIO10. Change taxonomy and empirical change distribution.
+6. **arXiv 2607.10180** — ActiveFly-Bench. Aerial VLA baselines with π₀ / OpenVLA.
+7. **arXiv 2404.06609** — GOAT-Bench. Goal-specification format and memory-efficiency findings.
+
+---
+
+## 14. Degeneracy check (do this first)
+
+The `map → change → search` task is degenerate at both ends: with a perfect map and no change, search is trivial; with total change, the map is worthless and the task reduces to plain ObjectNav. All signal lives in the middle of the change spectrum.
+
+**Before building anything:** take 5–10 HSSD or ProcTHOR scenes, sweep change magnitude in ~5 steps, and plot search cost for a "trust the map" agent against an "ignore the map" agent. If the curves don't cross with a meaningful gap between them, the framing has no room in it — and that's a week of work rather than a semester.
