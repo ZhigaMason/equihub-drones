@@ -23,7 +23,7 @@ env:
   max_yaw_rate: 1.5
 
 ppo:
-  total_steps: 200_000_000
+  total_steps: 500_000_000
   rollout_steps: 64
   epochs: 4
   minibatches: 16

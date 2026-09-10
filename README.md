@@ -11,6 +11,7 @@ reuse the exact control law the drone flies.
 | `uv run drones-wall-avoid` | Headless flight: take off, hold height, avoid walls, land on a detected ceiling |
 | `uv run --extra sim drones-train-hover [config.yaml]` | Train a hover-stabilising policy in the CrazyFlow simulator |
 | `uv run --extra sim drones-eval-hover runs/<name>` | Evaluate a trained policy against open-loop hover |
+| `uv run --extra sim drones-render-hover runs/<name>` | Film a trained policy flying in the simulator (MP4 or GIF) |
 | `uv run drones-fly-policy runs/<name>/policy` | Fly a trained policy on the real drone |
 | `uv run --extra sim pytest` | Test suite, including closed-loop stability checks and the simulator |
 
@@ -57,12 +58,14 @@ src/drones/
     assets/room.xml   floor, four walls and a ceiling, re-placed per world every episode
     sensors.py        Multi-ranger, Flow deck, IMU and a colour camera, as batched JAX
     hover_env.py      the hover-stabilisation task, pure functions of an EnvState
+    render.py         offscreen video of one world: chase and top-down cameras, flight-path trail
   rl/                 PPO in JAX (sim extra)
     networks.py       actor-critic; only the critic sees privileged simulator state
     ppo.py            rollout + GAE + updates compiled into one jitted call
     experiment.py     YAML experiment configs
     train_hover.py    drones-train-hover
     evaluate.py       drones-eval-hover
+    render.py         drones-render-hover
     export.py         drones-export-policy: trained params -> flight artifact
 configs/hover/        experiment configs: baseline, imu, camera
 tests/                pytest, hermetic: runs on the code defaults, not your .env
@@ -210,6 +213,7 @@ uv run --extra sim drones-train-hover configs/hover/imu.yaml --preset cpu
 uv run --extra sim --extra gpu drones-train-hover configs/hover/baseline.yaml --device gpu
 uv run --extra sim drones-train-hover --set sensors.enabled=[multiranger] --set ppo.total_steps=2e6
 uv run --extra sim drones-eval-hover runs/<name>                      # policy vs open-loop hover
+uv run --extra sim drones-render-hover runs/<name>                    # video of the policy flying
 ```
 
 A run is described by a YAML config (default `configs/hover/baseline.yaml`).
@@ -376,11 +380,51 @@ rate fell from 100% to about 3%. Evaluated on 256 fresh episodes:
 | Baseline policy | 0.8% | 10.0 s | 0.19 m | 0.47 m/s |
 | Open-loop hover (zero action) | 95% | 3.8 s | 0.40 m | 0.31 m/s |
 
+A larger sample of 800 episodes puts the crash rate nearer 2%, and it comes from narrow rooms. The
+quarter of rooms under 2 m across held 15 of the 17 crashes, each one a drift into a wall.
+
 It has learned to stay up from the decks alone. Height hold and drift are still
 loose, which is what a longer `gpu` run is for. The open-loop drift figure looks
 better only because it averages over the few worlds that had not crashed yet.
 The exported artifact loads and steps with JAX, flax and the simulator blocked
 from importing, as it will on the flying laptop.
+
+### Watching a policy fly
+
+```bash
+uv run --extra sim drones-render-hover runs/<name>                          # renders/chase-seed0.mp4
+uv run --extra sim drones-render-hover runs/<name> --camera top --episodes 3 --seed 7
+uv run --extra sim drones-render-hover runs/<name> --open-loop              # the zero-action baseline
+uv run --extra sim drones-render-hover runs/<name> --out flight.gif --width 320 --height 240
+```
+
+This flies one world with the policy's deterministic actions, as `drones-eval-hover` does, and films
+it through CrazyFlow's MuJoCo renderer:
+- The flight path is drawn as an orange trail from a green start marker.
+- The corner shows time, height against the target, speed, and how the episode ended.
+  `--font-scale 100|150|200` sets the text size in percent. The default, 100, is MuJoCo's smallest,
+  and the text keeps a fixed pixel size, so a larger `--width`/`--height` makes it smaller relative
+  to the picture.
+- Each episode gets its own room and start from `--seed`. The last frame is held briefly, so a crash is visible.
+- The video goes to `runs/<name>/renders/` unless `--out` names a file, and the extension picks the
+  format. MP4 uses the ffmpeg bundled with the `sim` extra. A GIF holds every frame in memory until
+  it is written, so keep GIFs small.
+
+It renders `runs/<name>/params.msgpack`, which always holds the latest iterate. Training overwrites
+it every `--save-every` iterations (100 by default) and at the end. The write is atomic, so rendering
+a run that is still training is safe, and it shows the policy as of the last save. Train with
+`--save-every 10` to see it closer to the current iteration.
+
+There are two cameras:
+- `chase` (default) follows the drone from the room-centre side, and moves in when a wall or the
+  ceiling would come between them. MuJoCo's default camera starts outside the room, where the wall
+  slabs hide everything.
+- `top` looks straight down on the whole room with the ceiling hidden: +x to the right, +y up. Use it
+  to judge drift.
+
+Headless nodes render through EGL: the script sets `MUJOCO_GL=egl` unless you have already set it,
+and `glfw` works on a desktop. `osmesa` fails with the `sim` extra's PyOpenGL. The render tests skip
+where no EGL context can be created.
 
 ### Performance notes
 

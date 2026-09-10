@@ -184,7 +184,12 @@ class PPO:
 
 # ---------------------------------------------------------------------- checkpoints
 def save_params(path, params):
-    Path(path).write_bytes(serialization.to_bytes(params))
+    # Write then rename, so a reader (drones-render-hover on a run still training) never sees half
+    # a checkpoint.
+    path = Path(path)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_bytes(serialization.to_bytes(params))
+    tmp.replace(path)
 
 
 def load_params(path, template):

@@ -18,6 +18,7 @@ drones-web = "drones.teleop.web.server:main"
 drones-wall-avoid = "drones.missions.wall_avoid:main"
 drones-train-hover = "drones.rl.train_hover:main"
 drones-eval-hover = "drones.rl.evaluate:main"
+drones-render-hover = "drones.rl.render:main"
 drones-export-policy = "drones.rl.export:main"
 drones-fly-policy = "drones.missions.fly_policy:main"
 
@@ -25,6 +26,8 @@ drones-fly-policy = "drones.missions.fly_policy:main"
 sim = [
     "crazyflow>=0.3.2",
     "flax>=0.12.9",
+    "imageio>=2.37",
+    "imageio-ffmpeg>=0.6",
     "optax>=0.2.8",
     "pyyaml>=6.0.3",
 ]
