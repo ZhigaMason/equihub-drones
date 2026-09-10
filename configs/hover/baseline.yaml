@@ -1,0 +1,33 @@
+# Baseline hover policy: the decks on the drone today.
+#   Multi-ranger deck  front, back, left, right and up distances
+#   Flow deck v2       optical flow, and the downward z-ranger
+# No IMU input: the firmware's attitude controller already holds attitude, so the policy works from
+# what the decks see. imu.yaml adds it, for comparison.
+#
+# Scaled for a GPU. Shrink it on a CPU with --preset cpu-test or --preset cpu.
+
+sensors:
+  enabled: [multiranger, optical_flow]
+
+env:
+  num_envs: 4096
+  control_freq: 50
+  episode_seconds: 10.0
+  history: 3
+  target_height: [0.5, 1.5]
+  room_size: [1.5, 5.0]
+  room_height: [1.6, 3.0]
+  start_speed: 0.5
+  start_tilt: 0.25
+  max_tilt: 0.35
+  max_yaw_rate: 1.5
+
+ppo:
+  total_steps: 200_000_000
+  rollout_steps: 64
+  epochs: 4
+  minibatches: 16
+  learning_rate: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  hidden: [256, 256]

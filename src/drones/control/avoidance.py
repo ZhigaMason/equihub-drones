@@ -1,5 +1,5 @@
 """Turns Multi-ranger distances into a body-frame velocity that avoids walls."""
-from drone.config import (AVOID_DISTANCE, AVOID_HARD_DISTANCE,
+from drones.config import (AVOID_DISTANCE, AVOID_HARD_DISTANCE,
                           CEILING_DISTANCE, MAX_AVOID_SPEED)
 
 

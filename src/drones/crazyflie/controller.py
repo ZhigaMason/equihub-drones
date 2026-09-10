@@ -1,37 +1,31 @@
-"""Owns the Crazyflie link and runs the flight control loop on its own thread.
+"""Owns the Crazyflie link and runs the flight state machine on its own thread.
 
 Everything that talks to cflib happens on the single `_thread_main` thread.
 The web layer only pushes commands into a queue and reads an immutable
 telemetry snapshot, so no cflib object is ever touched from an async handler.
+
+The control law itself lives in `drones.control`; this module decides *when*
+to fly, and what to do about operators, links and emergencies.
 """
 import logging
 import queue
 import threading
 import time
+from dataclasses import asdict
 
 import cflib.crtp
-from cflib.crazyflie import Crazyflie
-from cflib.crazyflie.log import LogConfig
-from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils.multiranger import Multiranger
 
-from drone import config
-from drone.avoidance import ceiling_detected, repulsion
+from drones import config
+from drones.control.avoidance import ceiling_detected
+from drones.control.mixer import UPDATE_PERIOD, Command, Mixer, clamp
+from drones.control.safety import CeilingMonitor
+from drones.crazyflie.link import (BatteryLog, abort_motion, check_decks,
+                                   open_link, read_ranges, resolve_uri,
+                                   wait_for_ranger_data)
 
 logger = logging.getLogger(__name__)
-
-# Control loop period (s).
-UPDATE_PERIOD = 0.1
-# Fraction of the new command blended in each cycle. Lower is gentler, but
-# also slower to react; a sweep showed no oscillation even at 1.0, so this is
-# tuned for response rather than stability margin.
-SMOOTHING = 0.5
-# Proportional gain turning an altitude error (m) into a climb rate (m/s).
-ALTITUDE_GAIN = 1.5
-# Consecutive ceiling readings needed before landing, so that a single
-# spurious measurement cannot end the flight.
-CEILING_SAMPLES = 3
 
 # Lifecycle states reported to the UI.
 DISCONNECTED = 'disconnected'
@@ -48,6 +42,8 @@ class DroneController:
         self._commands = queue.Queue()
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
+        # Flight thread only; the web layer never touches it.
+        self._mixer = Mixer()
 
         # --- shared state, guarded by _lock ---
         self._state = DISCONNECTED
@@ -88,10 +84,10 @@ class DroneController:
         """Set forward/back and turn (both normalised -1..1) and the desired
         altitude in metres, and feed the watchdog."""
         with self._lock:
-            self._forward = _clamp(forward)
-            self._yaw = _clamp(yaw)
+            self._forward = clamp(forward)
+            self._yaw = clamp(yaw)
             if altitude is not None:
-                self._desired_altitude = _clamp(
+                self._desired_altitude = clamp(
                     altitude, config.MIN_ALTITUDE, config.MAX_ALTITUDE)
             self._last_client = time.time()
 
@@ -183,13 +179,13 @@ class DroneController:
         self._publish(CONNECTING, 'Looking for a Crazyflie')
         self._drain_commands()
 
-        uri = _resolve_uri(config.URI)
+        uri = resolve_uri(config.URI)
         self._publish(CONNECTING, f'Connecting to {uri}')
 
-        with SyncCrazyflie(uri, cf=Crazyflie(rw_cache='./cache')) as scf:
-            self._check_decks(scf)
-            with Multiranger(scf) as ranger, _battery_log(scf) as battery:
-                if not _wait_for_data(ranger):
+        with open_link(uri) as scf:
+            check_decks(scf)
+            with Multiranger(scf) as ranger, BatteryLog(scf) as battery:
+                if not wait_for_ranger_data(ranger):
                     raise RuntimeError('No data from the Multi-ranger deck')
                 self._publish(IDLE, 'Connected and ready')
                 self._ground_loop(scf, ranger, battery)
@@ -201,18 +197,10 @@ class DroneController:
             except queue.Empty:
                 return
 
-    def _check_decks(self, scf):
-        missing = [name for param, name in
-                   (('deck.bcFlow2', 'Flow deck v2'),
-                    ('deck.bcMultiranger', 'Multi-ranger deck'))
-                   if int(scf.cf.param.get_value(param, timeout=5)) != 1]
-        if missing:
-            raise RuntimeError('Deck(s) not detected: ' + ', '.join(missing))
-
     def _ground_loop(self, scf, ranger, battery):
         """On the ground and connected: wait for a take-off or disconnect."""
         while not self._shutdown.is_set():
-            self._update_telemetry(ranger, battery)
+            self._update_telemetry(read_ranges(ranger), battery)
             try:
                 name, payload = self._commands.get(timeout=UPDATE_PERIOD)
             except queue.Empty:
@@ -256,6 +244,7 @@ class DroneController:
             scf.cf.supervisor.send_arming_request(True)
             time.sleep(1.0)
             mc.take_off(height, config.TAKEOFF_VELOCITY)
+            self._mixer.reset(height)
             self._set(target_altitude=height, desired_altitude=height)
             time.sleep(1.0)
             self._publish(FLYING, 'Flying')
@@ -269,7 +258,7 @@ class DroneController:
                 if self._estopped:
                     # The motors are already cut; descending would just send
                     # three seconds of setpoints to a locked drone.
-                    _abort_motion(mc)
+                    abort_motion(mc)
                 else:
                     self._publish(LANDING, f'Landing ({reason})')
                     # land() zeroes horizontal motion and is a no-op if
@@ -281,12 +270,13 @@ class DroneController:
             self._set(target_altitude=0.0, desired_altitude=None)
 
     def _fly_loop(self, scf, ranger, battery, mc):
-        vx = vy = 0.0
-        ceiling_hits = 0
+        ceiling = CeilingMonitor()
         started = time.time()
 
         while not self._shutdown.is_set():
-            self._update_telemetry(ranger, battery)
+            # One read per cycle, so telemetry and control see the same data.
+            ranges = read_ranges(ranger)
+            self._update_telemetry(ranges, battery)
 
             action = self._drain_pending()
             if action == 'estop':
@@ -299,17 +289,13 @@ class DroneController:
             if action == 'disconnect':
                 return 'client disconnected'
 
+            # A ceiling always ends the flight, in every mode.
+            if ceiling.update(ranges.up):
+                return f'ceiling at {ranges.up:.2f} m'
+
             with self._lock:
                 auto = self._auto_mode
                 avoid_on = self._avoid_enabled
-
-            # A ceiling always ends the flight, in every mode.
-            if ceiling_detected(ranger.up):
-                ceiling_hits += 1
-                if ceiling_hits >= CEILING_SAMPLES:
-                    return f'ceiling at {ranger.up:.2f} m'
-            else:
-                ceiling_hits = 0
 
             if auto and time.time() - started > config.MAX_FLIGHT_TIME:
                 return 'auto time limit'
@@ -319,60 +305,23 @@ class DroneController:
             silent = self._client_silent_for()
             if silent > config.LINK_TIMEOUT and not auto:
                 return f'no client for {silent:.1f} s'
-            # Stop turning when the client goes quiet, but keep holding the
+            # Stop moving when the client goes quiet, but keep holding the
             # last commanded height: hovering is the safe default.
             if silent > config.STICK_TIMEOUT:
                 self._set(forward=0.0, yaw=0.0)
 
-            target_vx, target_vy, vz, yaw = self._mix(ranger, auto, avoid_on)
-            vx += (target_vx - vx) * SMOOTHING
-            vy += (target_vy - vy) * SMOOTHING
+            with self._lock:
+                command = Command(self._forward, self._yaw,
+                                  self._desired_altitude)
+            setpoint = self._mixer.step(command, ranges, auto=auto,
+                                        avoid=avoid_on)
+            self._set(target_altitude=self._mixer.altitude)
 
-            mc.start_linear_motion(vx, vy, vz, yaw)
+            mc.start_linear_motion(setpoint.vx, setpoint.vy, setpoint.vz,
+                                   setpoint.yaw_rate)
             time.sleep(UPDATE_PERIOD)
 
         return 'shutting down'
-
-    def _mix(self, ranger, auto, avoid_on):
-        """Combine stick input, height tracking, wall repulsion and the limits.
-
-        The stick drives forward/back and turn. There is no sideways control:
-        lateral motion comes only from the avoidance vector.
-        """
-        with self._lock:
-            altitude = self._target_altitude
-            desired = self._desired_altitude
-            if auto:
-                manual_x = yaw = 0.0
-            else:
-                manual_x = self._forward * config.MAX_MANUAL_SPEED
-                yaw = self._yaw * config.MAX_YAW_RATE
-
-        if auto or avoid_on:
-            push_x, push_y = repulsion(ranger.front, ranger.back,
-                                       ranger.left, ranger.right)
-        else:
-            push_x = push_y = 0.0
-
-        # Track the requested height with a proportional climb rate, so the
-        # slider reads as an absolute altitude rather than a climb command.
-        if auto or desired is None:
-            vz = 0.0
-        else:
-            vz = _clamp(ALTITUDE_GAIN * (desired - altitude),
-                        -config.MAX_CLIMB_SPEED, config.MAX_CLIMB_SPEED)
-
-        # MotionCommander integrates velocity_z into an absolute setpoint, so
-        # the commanded altitude is tracked and clamped here too.
-        if vz > 0 and altitude >= config.MAX_ALTITUDE:
-            vz = 0.0
-        elif vz < 0 and altitude <= config.MIN_ALTITUDE:
-            vz = 0.0
-        self._set(target_altitude=_clamp(altitude + vz * UPDATE_PERIOD,
-                                         config.MIN_ALTITUDE,
-                                         config.MAX_ALTITUDE))
-
-        return manual_x + push_x, push_y, vz, yaw
 
     # Terminal actions, most urgent first. Settings are applied as they are
     # seen; only the winning terminal action is returned.
@@ -396,99 +345,5 @@ class DroneController:
                     or self._PRIORITY.index(name) < self._PRIORITY.index(action)):
                 action = name
 
-    def _update_telemetry(self, ranger, battery):
-        self._set(
-            telemetry={
-                'front': ranger.front, 'back': ranger.back,
-                'left': ranger.left, 'right': ranger.right,
-                'up': ranger.up, 'down': ranger.down,
-            },
-            battery=battery.voltage,
-        )
-
-
-def _abort_motion(mc):
-    """Tear a MotionCommander down without the descent that land() performs.
-
-    Mirrors MotionCommander.land() minus the `down()` call. It reaches into
-    the private setpoint thread because there is no public way to stop
-    streaming setpoints without first flying the drone to the ground.
-    """
-    if not mc._is_flying:
-        return
-    mc._thread.stop()
-    mc._thread = None
-    mc._cf.commander.send_stop_setpoint()
-    mc._cf.commander.send_notify_setpoint_stop()
-    mc._is_flying = False
-
-
-def _resolve_uri(configured):
-    """Pick the interface to connect to, and explain clearly when we cannot.
-
-    A bare 'Cannot find a Crazyradio Dongle' is useless when the drone is
-    sitting right there on a USB cable, so every failure names what a scan
-    did find.
-    """
-    available = [uri for uri, _ in cflib.crtp.scan_interfaces()]
-
-    if configured and configured.lower() != 'auto':
-        if not available or configured in available:
-            # Radio URIs do not always show up in a scan (the drone may be
-            # off), so try the configured one rather than second-guessing it.
-            return configured
-        raise RuntimeError(
-            f'{configured} is not available. Found: {", ".join(available)}. '
-            f'Set CFLIB_URI in .env to one of those, or to "auto".')
-
-    if not available:
-        raise RuntimeError(
-            'No Crazyflie found. Plug in the Crazyradio dongle (or the drone '
-            'over USB) and switch the drone on.')
-    if len(available) > 1:
-        raise RuntimeError(
-            f'Several interfaces found: {", ".join(available)}. '
-            f'Set CFLIB_URI in .env to the one you want.')
-    logger.info('Auto-selected %s', available[0])
-    return available[0]
-
-
-def _clamp(value, low=-1.0, high=1.0):
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(low, min(high, value))
-
-
-def _wait_for_data(ranger, timeout=5.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        # `up` is None both when out of range and before the first packet, so
-        # check a value that is always present once logging has started.
-        if ranger.down is not None:
-            return True
-        time.sleep(0.1)
-    return False
-
-
-class _battery_log:
-    """Context manager logging the battery voltage at 1 Hz."""
-
-    def __init__(self, scf):
-        self._cf = scf.cf
-        self.voltage = None
-        self._config = LogConfig('battery', 1000)
-        self._config.add_variable('pm.vbat', 'float')
-        self._config.data_received_cb.add_callback(self._received)
-
-    def _received(self, timestamp, data, logconf):
-        self.voltage = round(data['pm.vbat'], 2)
-
-    def __enter__(self):
-        self._cf.log.add_config(self._config)
-        self._config.start()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self._config.delete()
+    def _update_telemetry(self, ranges, battery):
+        self._set(telemetry=asdict(ranges), battery=battery.voltage)

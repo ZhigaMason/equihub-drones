@@ -1,18 +1,46 @@
 [project]
 name = "drones"
 version = "0.1.0"
-description = "Add your description here"
+description = "Crazyflie 2.1 Brushless flight software: shared control law, phone teleop and autonomous missions"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "cflib>=0.1.33",
     "fastapi>=0.141.1",
+    "numpy>=2.5.2",
     "python-dotenv>=1.2.3",
     "uvicorn>=0.52.4",
     "websockets>=17.1",
 ]
 
+[project.scripts]
+drones-web = "drones.teleop.web.server:main"
+drones-wall-avoid = "drones.missions.wall_avoid:main"
+drones-train-hover = "drones.rl.train_hover:main"
+drones-eval-hover = "drones.rl.evaluate:main"
+drones-export-policy = "drones.rl.export:main"
+drones-fly-policy = "drones.missions.fly_policy:main"
+
+[project.optional-dependencies]
+sim = [
+    "crazyflow>=0.3.2",
+    "flax>=0.12.9",
+    "optax>=0.2.8",
+    "pyyaml>=6.0.3",
+]
+gpu = [
+    "jax[cuda12]>=0.11.1 ; sys_platform == 'linux'",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11"]
+build-backend = "uv_build"
+
 [dependency-groups]
 dev = [
     "httpx2>=2.12.0",
+    "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

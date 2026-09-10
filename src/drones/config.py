@@ -1,9 +1,20 @@
-"""Configuration, loaded from the `.env` file next to the project root."""
+"""Configuration, loaded from the `.env` file at the project root."""
 import os
+from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
-load_dotenv()
+# src/drones/config.py -> the repository root, where .env lives.
+_REPO_ENV = Path(__file__).resolve().parents[2] / '.env'
+
+# Tests and CI set DRONES_NO_DOTENV so they run against the defaults below,
+# not whatever an operator has tuned into their local, git-ignored .env.
+if not os.getenv('DRONES_NO_DOTENV'):
+    # An explicit path, because dotenv's own search switches to the working
+    # directory under a REPL, a notebook, `python -c` or a debugger, and would
+    # then silently miss the repo's .env. An install outside the repo falls
+    # back to searching upwards from the working directory.
+    load_dotenv(_REPO_ENV if _REPO_ENV.is_file() else find_dotenv(usecwd=True))
 
 
 def _f(name, default):

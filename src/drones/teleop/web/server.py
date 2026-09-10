@@ -1,6 +1,6 @@
 """Self-hosted control page for the Crazyflie, reachable from a phone on the LAN.
 
-Run with:  uv run python -m drone.server
+Run with:  uv run drones-web
 """
 import asyncio
 import json
@@ -14,8 +14,8 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from drone import config
-from drone.controller import DroneController
+from drones import config
+from drones.crazyflie.controller import DroneController
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)-7s %(message)s')
@@ -40,6 +40,8 @@ class _NoCacheStatic(StaticFiles):
         response = super().file_response(*args, **kwargs)
         response.headers['Cache-Control'] = 'no-store, must-revalidate'
         return response
+
+
 # Telemetry pushes per second.
 TELEMETRY_HZ = 10
 

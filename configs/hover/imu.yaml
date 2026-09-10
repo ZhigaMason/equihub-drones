@@ -1,0 +1,5 @@
+# Baseline plus the IMU: gyro rates and the gravity direction from the attitude estimate.
+extends: baseline.yaml
+
+sensors:
+  enabled: [multiranger, optical_flow, imu]

@@ -14,3 +14,11 @@ wheels/
 
 # cflib TOC cache
 cache/
+
+# Test cache
+.pytest_cache/
+
+# RL / simulation artefacts: they get large fast, keep them out of git
+runs/
+checkpoints/
+wandb/

@@ -1,0 +1,11 @@
+# Everything, plus the forward colour camera (AI-deck geometry, raycast; see drones.sim.sensors).
+# Camera policies train and evaluate in simulation, but drones-fly-policy cannot fly them: the
+# artifact format carries no image encoder, and the AI deck streams over Wi-Fi, not the radio.
+extends: imu.yaml
+
+sensors:
+  enabled: [multiranger, optical_flow, imu, camera]
+  camera_resolution: [32, 24]
+
+env:
+  num_envs: 1024   # every image of a rollout is kept in memory for the update
