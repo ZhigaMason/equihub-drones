@@ -11,17 +11,28 @@ from pathlib import Path
 
 import numpy as np
 
-from drones.policy.runtime import Policy, PolicySpec
+from drones.policy.runtime import Policy, PolicySpec, SquareSpec
+
+
+def mlp_layers(tree):
+    """(kernel, bias) pairs of an MLP's Dense_0, Dense_1, ... in order, as numpy arrays."""
+    names = sorted((n for n in tree if n.startswith('Dense_')),
+                   key=lambda name: int(name.rsplit('_', 1)[1]))
+    return [(np.asarray(tree[n]['kernel']), np.asarray(tree[n]['bias'])) for n in names]
 
 
 def export_policy(env, params, directory):
     """Write the actor of `params`, with `env`'s observation and action spec, to `directory`."""
     if env.image_shape is not None:
         raise ValueError('camera policies cannot be exported for the drone yet')
-    actor = params['params']['actor']
-    names = sorted(actor, key=lambda name: int(name.rsplit('_', 1)[1]))
-    layers = [(np.asarray(actor[n]['kernel']), np.asarray(actor[n]['bias'])) for n in names]
+    layers = mlp_layers(params['params']['actor'])
     return Policy(PolicySpec(**env.policy_spec()), layers).save(directory)
+
+
+def export_square_policy(env, actor_params, directory):
+    """Write a SHAC actor for a drones.sim.square_env.SquareEnv to `directory`."""
+    layers = mlp_layers(actor_params['params']['net'])
+    return Policy(SquareSpec(**env.policy_spec()), layers).save(directory)
 
 
 def main(argv=None):

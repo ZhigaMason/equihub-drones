@@ -1,4 +1,4 @@
-"""Run an exported hover policy with numpy alone.
+"""Run an exported policy, hover or square, with numpy alone.
 
 An artifact is a directory holding policy.json (what the policy observes and how its actions
 scale) and actor.npz (the actor network's weights). drones.rl.export writes one after training; the
@@ -10,9 +10,20 @@ from pathlib import Path
 
 import numpy as np
 
-from drones.policy import interface
+from drones.policy import interface, square
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+# 1: hover artifacts from before the square task, without a `task` field.
+READABLE_VERSIONS = (1, 2)
+TUPLE_FIELDS = ('sensors', 'target_height', 'lap_time', 'height')
+
+
+def _decode(spec, action):
+    """Normalised action(s) -> roll, pitch (rad), yaw rate (rad/s), thrust (N)."""
+    return interface.decode_action(
+        np, np.asarray(action, np.float64), max_tilt=spec.max_tilt,
+        max_yaw_rate=spec.max_yaw_rate, hover_thrust=spec.hover_thrust,
+        thrust_min=spec.thrust_min, thrust_max=spec.thrust_max)
 
 
 @dataclass(frozen=True)
@@ -28,6 +39,7 @@ class PolicySpec:
     hover_thrust: float
     thrust_min: float
     thrust_max: float
+    task: str = 'hover'
     format_version: int = FORMAT_VERSION
 
     def __post_init__(self):
@@ -42,18 +54,41 @@ class PolicySpec:
         return self.history * self.frame_size
 
     def decode(self, action):
-        """Normalised action(s) -> roll, pitch (rad), yaw rate (rad/s), thrust (N)."""
-        return interface.decode_action(
-            np, np.asarray(action, np.float64), max_tilt=self.max_tilt,
-            max_yaw_rate=self.max_yaw_rate, hover_thrust=self.hover_thrust,
-            thrust_min=self.thrust_min, thrust_max=self.thrust_max)
+        return _decode(self, action)
+
+
+@dataclass(frozen=True)
+class SquareSpec:
+    """A square-flying policy: what it observes (drones.policy.square) and how its actions scale."""
+    control_freq: int
+    side: float
+    corner_radius: float
+    lap_time: tuple[float, float]
+    height: tuple[float, float]
+    max_tilt: float
+    max_yaw_rate: float
+    hover_thrust: float
+    thrust_min: float
+    thrust_max: float
+    task: str = 'square'
+    format_version: int = FORMAT_VERSION
+
+    @property
+    def observation_size(self):
+        return square.OBS_SIZE
+
+    def decode(self, action):
+        return _decode(self, action)
+
+
+SPECS = {'hover': PolicySpec, 'square': SquareSpec}
 
 
 class Policy:
     """The trained actor, a tanh MLP, giving the policy's deterministic action."""
 
     def __init__(self, spec, layers):
-        if 'camera' in spec.sensors:
+        if 'camera' in getattr(spec, 'sensors', ()):
             raise ValueError('camera policies need their image encoder, which this artifact '
                              'format does not carry')
         self.spec = spec
@@ -86,11 +121,15 @@ class Policy:
     def load(cls, directory):
         directory = Path(directory)
         data = json.loads((directory / 'policy.json').read_text())
-        if data.get('format_version') != FORMAT_VERSION:
-            raise ValueError(f'{directory}: artifact format {data.get("format_version")}, '
-                             f'this code reads {FORMAT_VERSION}')
-        spec = PolicySpec(**{**data, 'sensors': tuple(data['sensors']),
-                             'target_height': tuple(data['target_height'])})
+        version = data.get('format_version')
+        if version not in READABLE_VERSIONS:
+            raise ValueError(f'{directory}: artifact format {version}, this code reads '
+                             f'{list(READABLE_VERSIONS)}')
+        task = data.get('task', 'hover')
+        if task not in SPECS:
+            raise ValueError(f'{directory}: unknown task {task!r}')
+        data = {k: tuple(v) if k in TUPLE_FIELDS else v for k, v in data.items()}
+        spec = SPECS[task](**{**data, 'task': task, 'format_version': FORMAT_VERSION})
         with np.load(directory / 'actor.npz') as arrays:
             count = sum(1 for name in arrays.files if name.startswith('w'))
             layers = [(arrays[f'w{i}'], arrays[f'b{i}']) for i in range(count)]
@@ -123,5 +162,49 @@ class PolicyRunner:
         else:
             self.history = np.concatenate([self.history[1:], frame[None]], 0)
         action = self.policy.act(self.history.reshape(1, -1))[0]
+        self.prev_action = action.astype(np.float32)
+        return action
+
+
+class SquareRunner:
+    """Feeds the firmware's state estimate to a square policy exactly as the simulator does.
+
+    The reference is at `origin` (x, y and the flight height) when `t` is 0. Its first edge runs
+    along `rotation`, and the policy holds heading `ref_yaw`. `side` defaults to the trained side;
+    a smaller one is useful on first flights.
+    """
+
+    def __init__(self, policy, *, origin, ref_yaw, lap_time, direction=1.0, rotation=0.0,
+                 side=None):
+        spec = policy.spec
+        side = float(side or spec.side)
+        if not 2 * spec.corner_radius < side:
+            raise ValueError(f'side {side} m is too small for {spec.corner_radius} m corners')
+        self.policy = policy
+        self.params = dict(side=side, corner_radius=spec.corner_radius, lap_time=float(lap_time),
+                           direction=float(direction), rotation=float(rotation),
+                           origin=np.asarray(origin, np.float64))
+        self.ref_yaw = float(ref_yaw)
+        self.prev_action = np.zeros(interface.ACTION_SIZE, np.float32)
+
+    def reference(self, t):
+        """Reference (position, velocity) at t seconds since the square started."""
+        return square.square_reference(np, np.asarray(t, np.float64), **self.params)
+
+    def observe(self, t, *, pos, vel, yaw, gravity):
+        ref_pos, ref_vel = self.reference(t)
+        ahead, _ = self.reference(t + square.LOOKAHEAD_DT * np.arange(1, square.LOOKAHEAD + 1))
+
+        def row(x):
+            return np.asarray(x, np.float32)[None]
+
+        return square.encode_square_obs(
+            np, pos_est=row(pos), vel_est=row(vel), yaw_est=row(yaw), gravity=row(gravity),
+            ref_pos=row(ref_pos), ref_vel=row(ref_vel), lookahead_pos=row(ahead),
+            ref_yaw=row(self.ref_yaw), prev_action=self.prev_action[None])[0]
+
+    def step(self, t, *, pos, vel, yaw, gravity):
+        action = self.policy.act(self.observe(t, pos=pos, vel=vel, yaw=yaw,
+                                              gravity=gravity)[None])[0]
         self.prev_action = action.astype(np.float32)
         return action
