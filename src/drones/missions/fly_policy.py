@@ -1,6 +1,6 @@
 """Fly an exported hover policy on the real Crazyflie.
 
-    uv run drones-fly-policy runs/<name>/policy --dry-run         # sensors and policy live, motors off
+    uv run drones-fly-policy runs/<name>/policy --dry-run       # sensors, policy live, motors off
     uv run drones-fly-policy runs/<name>/policy --authority 0.3   # first flights: 30% of the policy
     uv run drones-fly-policy runs/<name>/policy
 
@@ -34,9 +34,10 @@ logger = logging.getLogger(__name__)
 FLOW_RESOLUTION = 0.10
 
 # Signs taking the simulator's right-handed attitude command to cflib's send_setpoint. From the
-# firmware: the legacy RPYT commander inverts yaw rate (crtp_commander_rpyt.c, "legacy rate input is
-# inverted") and uses the legacy CF2 pitch, which is inverted (stateEstimate.pitch). Roll is taken as
-# is. Verify on a tethered drone before the first free flight; each is a command-line flag.
+# firmware: the legacy RPYT commander inverts yaw rate (crtp_commander_rpyt.c, "legacy rate
+# input is inverted") and uses the legacy CF2 pitch, which is inverted (stateEstimate.pitch).
+# Roll is taken as is. Verify on a tethered drone before the first free flight; each is a
+# command-line flag.
 DEFAULT_SIGNS = {'roll': 1.0, 'pitch': -1.0, 'yaw_rate': -1.0}
 
 THRUST_COMMAND_MIN = 10000   # of 65535: near idle
@@ -148,16 +149,19 @@ def ticks(duration, freq, now, sleep):
 
 # ---------------------------------------------------------------------- the drone
 class SensorLog:
-    """Streams every variable the policy and the safety checks need, at 100 Hz."""
+    """Streams every variable the policy and the safety checks need, at 100 Hz.
 
-    def __init__(self, scf, now=time.monotonic):
+    `blocks` defaults to the hover policy's LOG_BLOCKS.
+    """
+
+    def __init__(self, scf, now=time.monotonic, blocks=None):
         from cflib.crazyflie.log import LogConfig
         self._cf = scf.cf
         self._now = now
         self.latest = {}
         self._arrived = {}
         self._configs = []
-        for name, variables in LOG_BLOCKS.items():
+        for name, variables in (blocks or LOG_BLOCKS).items():
             conf = LogConfig(name, LOG_PERIOD_MS)
             for variable, kind in variables:
                 conf.add_variable(variable, kind)
@@ -192,6 +196,20 @@ class SensorLog:
             conf.delete()
 
 
+def take_off(commander, log, options, freq, now, sleep):
+    """Climb to `options.height` on the firmware's hover controller, then measure the thrust
+    command that holds this drone up there: the median over the settled second half of the hover.
+    """
+    steps = options.takeoff_seconds * freq
+    for i in ticks(options.takeoff_seconds, freq, now, sleep):
+        commander.send_hover_setpoint(0, 0, 0, options.height * min(1.0, (i + 1) / steps))
+    samples = []
+    for _ in ticks(options.calibrate_seconds, freq, now, sleep):
+        commander.send_hover_setpoint(0, 0, 0, options.height)
+        samples.append(float(log.latest.get('controller.cmd_thrust', 0.0)))
+    return float(np.median(samples[len(samples) // 2:]))
+
+
 def fly(scf, policy, log, options, record=None, now=time.monotonic, sleep=time.sleep):
     """Take off on the firmware, fly the policy, land on the firmware.
 
@@ -206,15 +224,7 @@ def fly(scf, policy, log, options, record=None, now=time.monotonic, sleep=time.s
     cf.supervisor.send_arming_request(True)
     sleep(1.0)
     try:
-        steps = options.takeoff_seconds * freq
-        for i in ticks(options.takeoff_seconds, freq, now, sleep):
-            commander.send_hover_setpoint(0, 0, 0, options.height * min(1.0, (i + 1) / steps))
-
-        samples = []
-        for _ in ticks(options.calibrate_seconds, freq, now, sleep):
-            commander.send_hover_setpoint(0, 0, 0, options.height)
-            samples.append(float(log.latest.get('controller.cmd_thrust', 0.0)))
-        hover_command = float(np.median(samples[len(samples) // 2:]))  # second half: settled
+        hover_command = take_off(commander, log, options, freq, now, sleep)
         if not THRUST_COMMAND_MIN < hover_command < THRUST_COMMAND_MAX:
             return f'implausible hover thrust command {hover_command:.0f}'
         logger.info('Hover thrust command %.0f', hover_command)
@@ -237,11 +247,11 @@ def fly(scf, policy, log, options, record=None, now=time.monotonic, sleep=time.s
             reason = 'interrupted'
         return reason or 'time up'
     finally:
-        _land(commander, log, options, freq, now, sleep)
+        land(commander, log, options, freq, now, sleep)
         cf.supervisor.send_arming_request(False)
 
 
-def _land(commander, log, options, freq, now, sleep):
+def land(commander, log, options, freq, now, sleep):
     """Hand control back to the firmware's hover controller, steady up, then descend."""
     z = float(np.clip(log.latest.get('range.zrange', 1000 * options.height) / 1000.0,
                       0.2, options.height))
