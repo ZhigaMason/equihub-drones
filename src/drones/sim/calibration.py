@@ -1,4 +1,6 @@
 """Hover-thrust calibration, shared by the simulated tasks."""
+import crazyflow  # noqa: F401  Must precede scipy, see drones.sim.
+
 import jax
 import jax.numpy as jnp
 from crazyflow.sim.functional import attitude_control
