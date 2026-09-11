@@ -26,7 +26,8 @@ def test_flight_side_of_a_policy_needs_neither_jax_nor_the_simulator():
     # The laptop that flies a trained policy has only the base install: cflib and numpy.
     code = (
         'import sys\n'
-        'import drones.policy.interface, drones.policy.runtime, drones.missions.fly_policy\n'
+        'import drones.policy.interface, drones.policy.runtime, drones.policy.square\n'
+        'import drones.missions.fly_policy, drones.missions.fly_square\n'
         'bad = sorted(m for m in sys.modules if m.split(".")[0] in '
         '("jax", "flax", "optax", "crazyflow", "mujoco"))\n'
         'print(bad)\n'
