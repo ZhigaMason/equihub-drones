@@ -20,6 +20,8 @@ drones-train-hover = "drones.rl.train_hover:main"
 drones-eval-hover = "drones.rl.evaluate:main"
 drones-render-hover = "drones.rl.render:main"
 drones-export-policy = "drones.rl.export:main"
+drones-train-square = "drones.rl.train_square:main"
+drones-eval-square = "drones.rl.evaluate_square:main"
 drones-fly-policy = "drones.missions.fly_policy:main"
 
 [project.optional-dependencies]

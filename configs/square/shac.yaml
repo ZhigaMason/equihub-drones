@@ -1,0 +1,21 @@
+# Fly a 1 x 1 m square with SHAC, from the firmware's state estimate.
+#
+# Scaled for a GPU. Shrink it on a CPU with --preset cpu-test or --preset cpu.
+
+env:
+  num_envs: 4096
+  control_freq: 50
+  episode_seconds: 16.0
+  side: 1.0
+  corner_radius: 0.15
+  lap_time: [6.0, 10.0]
+  height: [0.8, 1.2]
+  thrust_gain_range: 0.1
+  latency_steps: [0, 1, 2]
+
+shac:
+  iterations: 4000
+  horizon: 32
+  actor_lr: 2.0e-3
+  critic_lr: 5.0e-4
+  hidden: [128, 128]

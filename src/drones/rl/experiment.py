@@ -40,7 +40,7 @@ PRESETS = {
 }
 
 
-def load(path):
+def load(path, sections=SECTIONS):
     """Read a config file into a nested dict, resolving any `extends` chain."""
     path = Path(path)
     data = yaml.safe_load(path.read_text()) or {}
@@ -48,10 +48,10 @@ def load(path):
         raise ValueError(f'{path}: expected a mapping at the top level')
     parent = data.pop('extends', None)
     if parent is not None:
-        data = merge(load(path.parent / parent), data)
-    unknown = sorted(set(data) - set(SECTIONS))
+        data = merge(load(path.parent / parent, sections), data)
+    unknown = sorted(set(data) - set(sections))
     if unknown:
-        raise ValueError(f'{path}: unknown sections {unknown}; expected {list(SECTIONS)}')
+        raise ValueError(f'{path}: unknown sections {unknown}; expected {list(sections)}')
     return data
 
 
@@ -66,13 +66,13 @@ def merge(base, override):
     return merged
 
 
-def override(data, assignments):
+def override(data, assignments, sections=SECTIONS):
     """Apply `section.key=value` assignments; each value is parsed as YAML."""
     for assignment in assignments:
         path, sep, raw = assignment.partition('=')
         section, dot, key = path.partition('.')
-        if not sep or not dot or section not in SECTIONS or not key:
-            raise ValueError(f'expected SECTION.KEY=VALUE with SECTION one of {list(SECTIONS)}, '
+        if not sep or not dot or section not in sections or not key:
+            raise ValueError(f'expected SECTION.KEY=VALUE with SECTION one of {list(sections)}, '
                              f'got {assignment!r}')
         data = merge(data, {section: {key: yaml.safe_load(raw)}})
     return data
