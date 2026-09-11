@@ -104,7 +104,8 @@ def test_shac_learns_to_track_the_square():
     # Iteration 0 sees only the first 0.64 s of each episode, before a hover-like policy drifts off
     # the square, so the baseline is the early-training window, not iteration 0.
     env = SquareEnv(SquareConfig(num_envs=32))
-    agent = SHAC(env, SHACConfig(iterations=40, horizon=32, hidden=(64, 64)))
+    # The learning-rate schedule spans 80 iterations; only the first 40 are run.
+    agent = SHAC(env, SHACConfig(iterations=80, horizon=32, hidden=(64, 64)))
     state = agent.init(jax.random.key(0))
     rewards, errors = [], []
     for _ in range(40):
