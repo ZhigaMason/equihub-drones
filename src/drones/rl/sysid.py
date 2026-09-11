@@ -27,18 +27,11 @@ from flax import struct
 from drones.missions.fly_square import LOG_FORMAT
 from drones.sim.geometry import yaw_from_quat
 from drones.sim.residual import init_residual
-from drones.sim.square_env import SquareConfig, SquareEnv
+from drones.sim.square_env import SquareConfig, SquareEnv, yaw_setpoint_step
 
 FLIGHT_PHASES = ('policy', 'firmware')
-# Error scales: a window drifting this far scores 1 in each term. ANGLE_SCALE matches
-# drones.sim.hover_env.YAW_BAND: a window's replay starts from the logged quaternion, but the
-# firmware's integrated yaw setpoint (SquareState.yaw_cmd) is not in the log and cannot be
-# reconstructed exactly, only approximated as the logged heading itself. The env's own yaw
-# controller keeps that setpoint within YAW_BAND (0.3 rad) of the true heading as a matter of
-# course, so replay is never truer to the log than about that much heading error even under a
-# perfectly fitted model. A tighter scale would score that irrecoverable gap rather than the
-# gain, latency and residual fit this module actually controls.
-POS_SCALE, VEL_SCALE, ANGLE_SCALE = 0.05, 0.1, 0.3
+# Error scales: a window drifting this far scores 1 in each term.
+POS_SCALE, VEL_SCALE, ANGLE_SCALE = 0.05, 0.1, 0.05
 
 
 @dataclass(frozen=True)
@@ -116,6 +109,8 @@ class Windows:
     quat: np.ndarray
     ang_vel: np.ndarray
     action: np.ndarray    # (W, K + max latency, 4); index max_latency + j was commanded at state j
+    yaw_cmd: np.ndarray   # (W, max_latency + 1) the env's own yaw setpoint when replay starts,
+                          # one value per latency candidate (see _segment_yaw_cmd)
 
     def __len__(self):
         return self.pos.shape[0]
@@ -124,14 +119,35 @@ class Windows:
         return jax.tree.map(lambda x: x[index], self)
 
 
-def make_windows(segments, horizon, max_latency):
+def _segment_yaw_cmd(segment, max_latency, max_yaw_rate, control_freq):
+    """The env's own integrated yaw setpoint (SquareState.yaw_cmd) at every row of `segment`, for
+    each latency candidate 0..max_latency. Replays yaw_setpoint_step along the whole segment from
+    its first row's heading, applying the action that was in force `latency` rows earlier (actions
+    before the segment start count as zero); returns an array (T, max_latency + 1)."""
+    heading = np.asarray(yaw_from_quat(segment.quat))
+    trajectories = []
+    for latency in range(max_latency + 1):
+        yaw_cmd = np.empty(len(segment.pos), np.float32)
+        yaw_cmd[0] = heading[0]
+        for t in range(len(segment.pos) - 1):
+            idx = t - latency
+            rate_action = segment.action[idx, 2] if idx >= 0 else 0.0
+            yaw_cmd[t + 1] = yaw_setpoint_step(np, yaw_cmd[t], rate_action, heading[t],
+                                               max_yaw_rate, control_freq)
+        trajectories.append(yaw_cmd)
+    return np.stack(trajectories, -1)
+
+
+def make_windows(segments, horizon, max_latency, max_yaw_rate, control_freq):
     """Every window of `horizon` steps that has `max_latency` earlier actions to replay."""
-    pieces = {name: [] for name in ('pos', 'vel', 'quat', 'ang_vel', 'action')}
+    pieces = {name: [] for name in ('pos', 'vel', 'quat', 'ang_vel', 'action', 'yaw_cmd')}
     for seg in segments:
+        yaw_cmd_by_row = _segment_yaw_cmd(seg, max_latency, max_yaw_rate, control_freq)
         for s in range(max_latency, len(seg.pos) - horizon):
             for name in ('pos', 'vel', 'quat', 'ang_vel'):
                 pieces[name].append(getattr(seg, name)[s:s + horizon + 1])
             pieces['action'].append(seg.action[s - max_latency:s + horizon])
+            pieces['yaw_cmd'].append(yaw_cmd_by_row[s])
     if not pieces['pos']:
         raise ValueError(f'no flight segment is longer than {horizon + max_latency} control steps')
     return Windows(**{k: np.stack(v).astype(np.float32) for k, v in pieces.items()})
@@ -200,7 +216,7 @@ class Replay:
             s = sim.states
             return (sim, yaw_cmd), (s.pos[:, 0], s.vel[:, 0], s.quat[:, 0])
 
-        _, predicted = jax.lax.scan(body, (sim, yaw_from_quat(windows.quat[:, 0])),
+        _, predicted = jax.lax.scan(body, (sim, windows.yaw_cmd[:, latency]),
                                     jnp.arange(horizon))
         return tuple(x.swapaxes(0, 1) for x in predicted)
 
@@ -264,8 +280,10 @@ def identify(segments, env_config=None, config=SysIdConfig(), log=print):
     env_config = env_config or SquareConfig()
     train_segments, test_segments = split_holdout(segments, config.holdout)
     max_latency = max(config.latencies)
-    train = make_windows(train_segments, config.horizon, max_latency)
-    test = make_windows(test_segments, config.horizon, max_latency)
+    train = make_windows(train_segments, config.horizon, max_latency, env_config.max_yaw_rate,
+                         env_config.control_freq)
+    test = make_windows(test_segments, config.horizon, max_latency, env_config.max_yaw_rate,
+                        env_config.control_freq)
     log(f'System ID: {len(train)} training windows, {len(test)} held out')
     replay = Replay(env_config, config.batch)
     start = {'log_gain': jnp.zeros(()), 'residual': init_residual(jax.random.key(config.seed))}
@@ -275,10 +293,7 @@ def identify(segments, env_config=None, config=SysIdConfig(), log=print):
     for latency in config.latencies:
         model = replay.fit(start, latency, train, ('log_gain',), config.gain_steps, config, log)
         candidates[latency] = model, replay.evaluate(model, latency, test)
-    # Selected by score_one_step, not score_horizon: latency is a one-step alignment between
-    # actions and transitions, and score_one_step isolates that before a window's irrecoverable
-    # yaw_cmd reconstruction error (see ANGLE_SCALE above) has time to accumulate and swamp it.
-    latency = min(candidates, key=lambda k: candidates[k][1]['score_one_step'])
+    latency = min(candidates, key=lambda k: candidates[k][1]['score_horizon'])
     gain_model, report['gain_and_latency'] = candidates[latency]
     full = replay.fit(gain_model, latency, train, ('log_gain', 'residual'),
                       config.residual_steps, config, log)

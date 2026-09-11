@@ -16,6 +16,7 @@ action latency. so_rpy's lift is cmd_f_coef * thrust / mass with no offset, so a
 mass too. A residual wrench fitted to real flights (drones.rl.sysid) enters through CrazyFlow's
 disturbance force and torque.
 """
+import math
 from dataclasses import dataclass
 
 import crazyflow  # noqa: F401  Must precede scipy, see drones.sim.
@@ -111,6 +112,14 @@ class SquareState:
     key: jax.Array
 
 
+def yaw_setpoint_step(xp, yaw_cmd, yaw_rate_action, yaw, max_yaw_rate, control_freq):
+    """The integrated yaw setpoint after one control step: yaw_cmd advanced by the commanded
+    rate, kept within YAW_BAND of the heading so it cannot wind up."""
+    yaw_cmd = yaw_cmd + yaw_rate_action * max_yaw_rate / control_freq
+    error = xp.mod(yaw_cmd - yaw + math.pi, 2 * math.pi) - math.pi
+    return yaw + xp.clip(error, -YAW_BAND, YAW_BAND)
+
+
 class SquareEnv:
     """Vectorised square task. `reset(key)` and `step(state, action)` are jitted; `step` is
     differentiable."""
@@ -136,6 +145,14 @@ class SquareEnv:
         self.thrust_min = 4 * params['thrust_min']
         self.thrust_max = 4 * params['thrust_max']
         self.mass = float(self.sim.data.params.mass.ravel()[0])
+        # so_rpy fits yaw as a second-order system with a steady-state gain of
+        # -rpy_coef_z / cmd_rpy_coef_z != 1 (about 1.44 for cf21B_500), i.e. holding a command
+        # of c settles at a yaw of about 1.44 * c, not c. `advance` uses this to command the yaw
+        # that makes the model track yaw_cmd with unit gain, as the real drone's rate-mode yaw
+        # setpoint does.
+        p = self.sim.data.params
+        self.yaw_gain = (float(-p.rpy_coef[2] / p.cmd_rpy_coef[2])
+                         if config.dynamics == 'so_rpy' else 1.0)
         self.hover_thrust = calibrate_hover_thrust(self._sim_step, self.sim.default_data,
                                                    config.num_envs, self.mass, config.sim_freq)
         self.residual_model = Residual()
@@ -231,14 +248,17 @@ class SquareEnv:
         cfg = self.config
         quat = sim.states.quat[:, 0]
         yaw = yaw_from_quat(quat)
-        yaw_cmd = yaw_cmd + action[:, 2] * cfg.max_yaw_rate / cfg.control_freq
-        # The integrated yaw setpoint stays near the actual heading, so it cannot wind up.
-        yaw_cmd = yaw + jnp.clip(wrap_angle(yaw_cmd - yaw), -YAW_BAND, YAW_BAND)
+        yaw_cmd = yaw_setpoint_step(jnp, yaw_cmd, action[:, 2], yaw, cfg.max_yaw_rate,
+                                    cfg.control_freq)
         roll, pitch, _, thrust = decode_action(
             jnp, action, max_tilt=cfg.max_tilt, max_yaw_rate=cfg.max_yaw_rate,
             hover_thrust=self.hover_thrust, thrust_min=self.thrust_min,
             thrust_max=self.thrust_max)
-        cmd = jnp.stack([roll, pitch, yaw_cmd, thrust * thrust_gain], -1)[:, None]
+        # so_rpy's fitted yaw model is not unit-gain (see self.yaw_gain in __init__): scale the
+        # commanded yaw so the model tracks yaw_cmd with unit gain at any heading, like the real
+        # drone's rate-mode yaw. The error is wrapped so crossing +-pi does not jump.
+        yaw_command = self.yaw_gain * (yaw + wrap_angle(yaw_cmd - yaw))
+        cmd = jnp.stack([roll, pitch, yaw_command, thrust * thrust_gain], -1)[:, None]
         sim = attitude_control(sim, cmd)
         if residual is not None:
             s = sim.states

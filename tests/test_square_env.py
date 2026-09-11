@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from drones.policy.square import OBS_SIZE
+from drones.sim.geometry import euler_to_quat, yaw_from_quat
 from drones.sim.residual import FORCE_SCALE, init_residual
 from drones.sim.square_env import PRIVILEGED_SIZE, SquareConfig, SquareEnv
 
@@ -137,3 +138,17 @@ def test_the_residual_force_pushes_the_drone():
     state, *_ = fly(env, state, jnp.zeros(4), 10)   # 0.2 s
     expected = FORCE_SCALE / env.mass * 0.2
     np.testing.assert_allclose(state.sim.states.vel[:, 0, 0], expected, rtol=0.1)
+
+
+def test_holding_a_far_heading_does_not_spin(quiet):
+    """so_rpy's fitted yaw model is not unit-gain (see SquareEnv.yaw_gain); without compensating
+    for it, a heading far from zero drives the yaw-setpoint band to its limit and spins up."""
+    heading = 2.5
+    state = hold_still(quiet.reset(jax.random.key(9))[0])
+    quat = euler_to_quat(jnp.zeros(N), jnp.zeros(N), jnp.full(N, heading))[:, None]
+    state = state.replace(sim=state.sim.replace(states=state.sim.states.replace(quat=quat)),
+                          yaw_cmd=jnp.full(N, heading), ref_yaw=jnp.full(N, heading))
+    state, *_ = fly(quiet, state, jnp.zeros(4), 100)   # 2 s
+    yaw = yaw_from_quat(state.sim.states.quat[:, 0])
+    assert float(jnp.abs(yaw - heading).max()) < 0.05
+    assert float(jnp.abs(state.sim.states.ang_vel[:, 0, 2]).max()) < 0.1
