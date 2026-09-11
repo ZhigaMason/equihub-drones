@@ -29,12 +29,12 @@ from mujoco import mjx
 
 from drones.policy.interface import GYRO_SCALE, decode_action, encode_frame, frame_size
 from drones.sim import sensors
+from drones.sim.calibration import GRAVITY, calibrate_hover_thrust
 from drones.sim.geometry import euler_to_quat, quat_to_matrix, wrap_angle, yaw_from_quat
 from drones.sim.sensors import DOWN, SensorConfig
 
 ROOM_XML = Path(__file__).parent / 'assets' / 'room.xml'
 DRONE = 'cf21B_500'
-GRAVITY = 9.81
 WALLS = ('wall_px', 'wall_nx', 'wall_py', 'wall_ny', 'ceiling')
 WALL_HALF_THICKNESS = 0.05
 # The integrated yaw setpoint stays within this band of the actual heading, so it cannot wind up.
@@ -120,7 +120,8 @@ class HoverEnv:
         self.thrust_min = 4 * params['thrust_min']
         self.thrust_max = 4 * params['thrust_max']
         self.mass = float(self.sim.data.params.mass.ravel()[0])
-        self.hover_thrust = self._calibrate_hover_thrust(self.sim.default_data)
+        self.hover_thrust = calibrate_hover_thrust(self._sim_step, self.sim.default_data,
+                                                   config.num_envs, self.mass, config.sim_freq)
 
         self._initial = (self.sim.default_data, self.sim.mjx_data)
         self._reset_jit = jax.jit(self._reset)
@@ -229,33 +230,6 @@ class HoverEnv:
             thrust_max=self.thrust_max)
         cmd = jnp.stack([roll, pitch, yaw_cmd, thrust], -1)
         return cmd[:, None, :], yaw_cmd
-
-    def _calibrate_hover_thrust(self, default):
-        """Collective thrust that holds altitude, found by simulation rather than assumed.
-
-        The fitted so_rpy model does not turn a command of m*g into exactly m*g of lift, so zero
-        action is calibrated to true hover with a few secant steps on the climb rate.
-        """
-        level = default.replace(states=default.states.replace(
-            pos=default.states.pos.at[..., 2].set(1.0)))
-        steps = int(0.2 * self.config.sim_freq)
-
-        @jax.jit
-        def climb_rate(thrust):
-            cmd = jnp.zeros((self.num_envs, 1, 4)).at[..., 3].set(thrust)
-            return self._sim_step(attitude_control(level, cmd), n_steps=steps).states.vel[0, 0, 2]
-
-        weight = self.mass * GRAVITY
-        lo, hi = 0.9 * weight, 1.1 * weight
-        f_lo, f_hi = float(climb_rate(lo)), float(climb_rate(hi))
-        for _ in range(4):
-            # Lift is linear in the command for so_rpy, so one step usually lands on it exactly;
-            # stop before the next step divides by zero.
-            if abs(f_hi) < 1e-6 or f_hi == f_lo:
-                break
-            lo, f_lo, hi = hi, f_hi, hi - f_hi * (hi - lo) / (f_hi - f_lo)
-            f_hi = float(climb_rate(hi))
-        return hi
 
     # ------------------------------------------------------------------ episodes
     def _sample_episodes(self, key, n):
