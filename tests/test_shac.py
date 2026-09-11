@@ -100,12 +100,16 @@ def test_one_iteration_runs_and_updates(square):
     assert int(new.iteration) == 1
 
 
-def test_reward_improves_on_the_square():
+def test_shac_learns_to_track_the_square():
+    # Iteration 0 sees only the first 0.64 s of each episode, before a hover-like policy drifts off
+    # the square, so the baseline is the early-training window, not iteration 0.
     env = SquareEnv(SquareConfig(num_envs=32))
-    agent = SHAC(env, SHACConfig(iterations=20, horizon=32, hidden=(64, 64)))
+    agent = SHAC(env, SHACConfig(iterations=40, horizon=32, hidden=(64, 64)))
     state = agent.init(jax.random.key(0))
-    rewards = []
-    for _ in range(20):
+    rewards, errors = [], []
+    for _ in range(40):
         state, stats = agent.iterate(state)
         rewards.append(float(stats['reward']))
-    assert np.mean(rewards[-5:]) > np.mean(rewards[:5])
+        errors.append(float(stats['pos_error']))
+    assert np.mean(rewards[-5:]) > np.mean(rewards[5:15]) + 0.2
+    assert np.mean(errors[-5:]) < 0.2
