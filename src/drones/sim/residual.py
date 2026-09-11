@@ -1,9 +1,10 @@
 """A learned correction to CrazyFlow's dynamics, fitted to real flights by drones.rl.sysid.
 
 A small network maps the drone's state and action to a force and a torque. They act through
-CrazyFlow's disturbance inputs, `states.force` and `states.torque` (world frame), which so_rpy adds to
-its fitted dynamics, so the corrected simulator stays differentiable. Features and outputs are in the
-body frame, so the correction does not depend on where the drone is or which way it faces.
+CrazyFlow's disturbance inputs, `states.force` and `states.torque` (world frame), which
+so_rpy adds to its fitted dynamics, so the corrected simulator stays differentiable.
+Features and outputs are in the body frame, so the correction does not depend on where
+the drone is or which way it faces.
 """
 import flax.linen as nn
 import jax.numpy as jnp
