@@ -77,6 +77,16 @@ def test_gaps_split_a_flight(flights, tmp_path):
     assert [len(s.pos) for s in load_flight(tmp_path / 'gap.csv')] == [100, 490]
 
 
+def test_a_nan_row_splits_a_flight(flights, tmp_path):
+    lines = flights[0].read_text().splitlines()
+    header = lines[1].split(',')
+    row = lines[102].split(',')
+    row[header.index('vx')] = 'nan'
+    lines[102] = ','.join(row)
+    (tmp_path / 'nan_row.csv').write_text('\n'.join(lines) + '\n')
+    assert [len(s.pos) for s in load_flight(tmp_path / 'nan_row.csv')] == [100, 499]
+
+
 def test_a_log_of_another_kind_is_refused(tmp_path):
     (tmp_path / 'hover.csv').write_text('time,phase\n0,policy\n')
     with pytest.raises(ValueError, match='square flight log'):

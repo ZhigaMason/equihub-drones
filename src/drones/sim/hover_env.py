@@ -29,7 +29,7 @@ from mujoco import mjx
 
 from drones.policy.interface import GYRO_SCALE, decode_action, encode_frame, frame_size
 from drones.sim import sensors
-from drones.sim.calibration import GRAVITY, calibrate_hover_thrust
+from drones.sim.calibration import calibrate_hover_thrust
 from drones.sim.geometry import euler_to_quat, quat_to_matrix, wrap_angle, yaw_from_quat
 from drones.sim.sensors import DOWN, SensorConfig
 

@@ -78,6 +78,7 @@ src/drones/
     export.py         drones-export-policy: trained params -> flight artifact
     shac.py           short-horizon actor-critic through the simulator
     sysid.py          fit thrust gain, latency and residual to flight logs
+    square_experiment.py square experiments as YAML: presets and --set
     train_square.py   drones-train-square
     evaluate_square.py drones-eval-square
     finetune_square.py drones-finetune-square

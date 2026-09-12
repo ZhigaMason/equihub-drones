@@ -1,4 +1,5 @@
 """The deploy script against a fake Crazyflie: conversions, sequencing and safety."""
+import dataclasses
 import math
 
 import numpy as np
@@ -6,7 +7,7 @@ import pytest
 
 from drones.missions import fly_policy
 from drones.missions.fly_policy import (DEFAULT_SIGNS, FLOW_RESOLUTION, FlightOptions, Limits,
-                                        abort_reason, fly, read_inputs, to_setpoint)
+                                        abort_reason, check_task, fly, read_inputs, to_setpoint)
 from drones.policy.interface import BASELINE
 from drones.policy.runtime import Policy, PolicySpec
 
@@ -77,6 +78,13 @@ def test_flow_counts_become_the_simulators_apparent_motion():
     np.testing.assert_allclose(inputs['flow_rate'], [v / h, 0.0], atol=1e-9)
     inputs, _ = read_inputs({**HOVERING, 'motion.deltaX': -10}, SPEC)
     np.testing.assert_allclose(inputs['flow_rate'], [0.0, FLOW_RESOLUTION * 10 / SPEC.flow_gain])
+
+
+def test_check_task_refuses_a_non_hover_policy():
+    assert check_task(SPEC, 'runs/x/policy') is None
+    square_spec = dataclasses.replace(SPEC, task='square')
+    reason = check_task(square_spec, 'runs/x/policy')
+    assert reason is not None and 'square' in reason and 'drones-fly-square' in reason
 
 
 def test_ranges_are_metres_clipped_to_the_sensor_range():

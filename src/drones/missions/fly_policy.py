@@ -121,6 +121,13 @@ def to_setpoint(action, spec, hover_command, signs=DEFAULT_SIGNS, authority=1.0)
             command)
 
 
+def check_task(spec, artifact):
+    """None if `spec` is a hover policy; otherwise the message to exit with instead of flying it."""
+    if spec.task != 'hover':
+        return f'{artifact} is a {spec.task} policy; fly it with drones-fly-square'
+    return None
+
+
 def abort_reason(inputs, tilt, log_age, target, limits):
     """Why the policy must hand back control right now, or None."""
     if log_age > limits.max_log_age:
@@ -322,6 +329,9 @@ def main(argv=None):
         policy = Policy.load(args.artifact)
     except (OSError, ValueError) as exc:
         sys.exit(f'Cannot load {args.artifact}: {exc}')
+    reason = check_task(policy.spec, args.artifact)
+    if reason:
+        sys.exit(reason)
     low, high = policy.spec.target_height
     if not low <= args.height <= high:
         sys.exit(f'--height {args.height} is outside the {low}-{high} m the policy trained on')

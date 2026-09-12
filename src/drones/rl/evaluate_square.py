@@ -35,6 +35,8 @@ def evaluate_square(env, act, key):
     return {
         'crash_rate': float((crashed & record).any(0).mean()),
         'survived_seconds': float(survived.mean()),
+        # Survival time over lap time, not measured path progress: a world that crashes off-course
+        # still counts the seconds it stayed up, whichever way round the square it drifted.
         'laps': float((survived / lap_time).mean()),
         'pos_rmse_m': float(jnp.sqrt((jnp.square(error) * mask).sum()
                                      / jnp.maximum(mask.sum(), 1))),

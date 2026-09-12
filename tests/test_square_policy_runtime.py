@@ -1,6 +1,5 @@
 """The square policy artifact: save, load, and observe exactly as the simulator does."""
 import json
-import math
 
 import numpy as np
 import pytest

@@ -60,7 +60,10 @@ def main(argv=None):
     out = args.out or args.run.with_name(args.run.name + '-ft')
     out.mkdir(parents=True, exist_ok=True)
     with jax.default_device(jax.devices(args.device)[0]):
-        base_env, base_agent, params = load_square_run(args.run, args.num_envs, args.device)
+        # corrected=False: if `run` was itself already finetuned, its residual must not be stacked
+        # into what this pass treats as the uncorrected baseline.
+        base_env, base_agent, params = load_square_run(args.run, args.num_envs, args.device,
+                                                        corrected=False)
         try:
             segments = load_flights(args.flights)
         except (OSError, ValueError) as exc:

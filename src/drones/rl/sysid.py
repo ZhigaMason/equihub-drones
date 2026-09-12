@@ -19,6 +19,7 @@ included.
 """
 import csv
 import dataclasses
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,8 +51,19 @@ class Segment:
     action: np.ndarray    # (T, 4) the normalised action the drone acted on
 
 
+# Columns _segment reads into a Segment: a non-finite value in any of these makes a row unusable.
+SEGMENT_COLUMNS = ('x', 'y', 'z', 'vx', 'vy', 'vz', 'qx', 'qy', 'qz', 'qw',
+                   'gyro_x', 'gyro_y', 'gyro_z', 'a_roll', 'a_pitch', 'a_yaw', 'a_thrust')
+
+
+def _row_is_finite(row):
+    return all(math.isfinite(float(row[name])) for name in SEGMENT_COLUMNS)
+
+
 def load_flight(path, control_freq=50):
-    """The segments of one drones-fly-square log, split wherever a control step is missing."""
+    """The segments of one drones-fly-square log, split wherever a control step is missing or its
+    logged state or action holds a non-finite value (a bad row is dropped, like a gap, rather than
+    let a NaN propagate into the fit)."""
     path = Path(path)
     lines = path.read_text().splitlines()
     if not lines or lines[0] != LOG_FORMAT:
@@ -59,6 +71,12 @@ def load_flight(path, control_freq=50):
     rows = [r for r in csv.DictReader(lines[1:]) if r['phase'] in FLIGHT_PHASES]
     groups, current, last = [], [], None
     for row in rows:
+        if not _row_is_finite(row):
+            if current:
+                groups.append(current)
+                current = []
+            last = None
+            continue
         t = float(row['time'])
         if current and t - last > 1.5 / control_freq:
             groups.append(current)
