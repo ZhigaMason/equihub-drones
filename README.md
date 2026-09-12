@@ -13,6 +13,10 @@ reuse the exact control law the drone flies.
 | `uv run --extra sim drones-eval-hover runs/<name>` | Evaluate a trained policy against open-loop hover |
 | `uv run --extra sim drones-render-hover runs/<name>` | Film a trained policy flying in the simulator (MP4 or GIF) |
 | `uv run drones-fly-policy runs/<name>/policy` | Fly a trained policy on the real drone |
+| `uv run --extra sim drones-train-square [config.yaml]` | Train a policy to fly a 1 × 1 m square with SHAC |
+| `uv run --extra sim drones-eval-square runs/<name>` | Evaluate a square policy: crash rate, laps, tracking error |
+| `uv run drones-fly-square runs/<name>/policy` | Fly the square on the real drone, or let the firmware fly it and log (`--firmware`) |
+| `uv run --extra sim drones-finetune-square runs/<name> --flights …` | Fit the simulator to real flights, then finetune the policy in it |
 | `uv run --extra sim pytest` | Test suite, including closed-loop stability checks and the simulator |
 
 ## Setup
@@ -51,14 +55,19 @@ src/drones/
   missions/
     wall_avoid.py     headless autonomous flight
     fly_policy.py     drones-fly-policy: fly a trained policy on the real drone
+    fly_square.py     drones-fly-square: fly a square policy, or log the firmware flying one
   policy/             what a trained policy needs at flight time, numpy only
     interface.py      observation layout and action scaling, shared by sim and drone
     runtime.py        the exported artifact, and a runner that feeds it live readings
+    square.py         the square's reference path and observation, shared by sim and drone
   sim/                CrazyFlow simulation (sim extra): scene, sensor models, tasks
     assets/room.xml   floor, four walls and a ceiling, re-placed per world every episode
     sensors.py        Multi-ranger, Flow deck, IMU and a colour camera, as batched JAX
     hover_env.py      the hover-stabilisation task, pure functions of an EnvState
     render.py         offscreen video of one world: chase and top-down cameras, flight-path trail
+    square_env.py     the square task: differentiable, for SHAC
+    residual.py       a learned force and torque correcting the dynamics
+    calibration.py    hover-thrust calibration
   rl/                 PPO in JAX (sim extra)
     networks.py       actor-critic; only the critic sees privileged simulator state
     ppo.py            rollout + GAE + updates compiled into one jitted call
@@ -67,7 +76,13 @@ src/drones/
     evaluate.py       drones-eval-hover
     render.py         drones-render-hover
     export.py         drones-export-policy: trained params -> flight artifact
+    shac.py           short-horizon actor-critic through the simulator
+    sysid.py          fit thrust gain, latency and residual to flight logs
+    train_square.py   drones-train-square
+    evaluate_square.py drones-eval-square
+    finetune_square.py drones-finetune-square
 configs/hover/        experiment configs: baseline, imu, camera
+configs/square/       experiment config: shac.yaml
 tests/                pytest, hermetic: runs on the code defaults, not your .env
 ```
 
@@ -436,6 +451,73 @@ where no EGL context can be created.
 - Walls only move at reset, so the scene geometry is recomputed then and the
   per-step rays reuse it. A task with moving obstacles would need to refresh it
   every step.
+
+## Flying a square
+
+A second task: fly a 1 × 1 m square, corners rounded to 0.15 m, at a steady speed and height. It is
+trained with SHAC (short-horizon actor-critic, Xu et al. 2022). Instead of estimating gradients from
+returns as PPO does, SHAC backpropagates 32-step windows through CrazyFlow's dynamics, with a
+critic's value closing each window.
+
+The square policy observes the firmware's state estimate: the Flow deck's Kalman filter's position,
+velocity and attitude. The hover policy does not. The policy sees its error to the reference now and
+a second ahead, all in its own heading frame.
+
+```bash
+uv run --extra sim drones-train-square --preset cpu-test     # quick check
+uv run --extra sim drones-train-square --preset cpu          # a few minutes on a laptop
+uv run --extra sim drones-eval-square runs/<name>
+```
+
+**The task** (`sim/square_env.py`, configured by `configs/square/shac.yaml`):
+- Each episode samples:
+  - a lap time of 6–10 s and a height of 0.8–1.2 m
+  - a direction and orientation for the square
+  - a starting point along it, and a start error of up to 0.1 m
+- The estimate carries noise and a 1 cm/√s horizontal drift.
+- Thrust gain (±10%) and action latency (0–2 control steps) are randomised: two of the sim-to-real
+  gaps the hover task left open.
+- The reward runs from about 1 to 2.5 per step, for staying up and tracking position and velocity,
+  less small tilt, rate and jerk costs. A crash costs 10: below 0.1 m, tilted past 57°, or 1 m off
+  the reference.
+- `step` is differentiable end to end. Metrics are gradient-stopped, and restarted worlds carry no
+  gradient from their last episode.
+
+**On the drone** (`drones-fly-square`): take-off, hover calibration and landing are
+`drones-fly-policy`'s. The square starts where the drone hovers, first edge straight ahead.
+- `--side 0.5 --authority 0.3` for first flights.
+- `--clockwise`, `--lap-time` and `--laps` shape the flight.
+- It aborts on `drones-fly-policy`'s limits, and when the drone is more than 0.5 m off the square.
+- `--firmware` lets the firmware's own position controller fly the same square. The attitude and
+  thrust it commands are logged in the policy's action units, so system-ID data can be collected
+  before a policy has flown. On the first `--firmware` flight, check that `a_pitch` is positive while
+  the drone accelerates forward. The sign of `controller.pitch` in the firmware log comes from reading
+  the source, not from flying.
+
+Every flight is logged to `runs/<name>/flights/<stamp>-square*.csv`.
+
+**From real flights back to the simulator** (`drones-finetune-square`):
+
+```bash
+uv run drones-fly-square runs/<name>/policy --firmware --laps 3   # a few of these
+uv run --extra sim drones-finetune-square runs/<name> --flights runs/<name>/flights/*-square*.csv
+```
+
+1. It replays the logged actions from logged states through the simulator, and fits three things to
+   10-step windows:
+   - a thrust gain (mass and thrust gain act only as a ratio in the fitted model, so one number
+     covers both)
+   - the action latency
+   - a small residual network producing a force and torque, applied through CrazyFlow's disturbance
+     inputs
+2. It reports held-out error for the uncorrected simulator, gain and latency alone, and the full
+   correction, in `runs/<name>-ft/sysid.json`. If the correction does not beat the uncorrected
+   simulator on held-out flights, it stops there.
+3. Otherwise it continues SHAC in the corrected simulator: randomisation centred on the fit and
+   halved, learning rates at a quarter. The finetuned policy is evaluated in both simulators.
+
+The logged states are the firmware's estimate, not ground truth, so the correction matches the
+simulator to what the drone believed, estimator drift included.
 
 ## Development
 
