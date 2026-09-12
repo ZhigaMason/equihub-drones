@@ -6,11 +6,16 @@ logged actions through the simulator, and is scored on how far it drifts from th
 Three models are compared on held-out flights:
     uncorrected       the simulator as it is
     gain_and_latency  a fitted thrust gain, at the best-fitting latency
-    full              the same plus the residual network (drones.sim.residual)
+    full              the same, plus a residual network (drones.sim.residual) fitted with the
+                      gain held fixed
 
 so_rpy's lift is cmd_f_coef * thrust / mass with no offset, so mass cannot be told apart from the
-thrust gain; the gain carries both. The logged states are the firmware's Kalman estimate, not ground
-truth, so the fit matches the simulator to what the drone believed, estimator bias included.
+thrust gain; the gain carries both. Near hover a constant body-z residual force is likewise
+interchangeable with a small thrust-gain change, so gain and residual are not jointly
+identifiable either: the gain is fitted alone first, then held fixed while the residual is
+fitted to whatever error remains. The logged states are the firmware's Kalman estimate, not
+ground truth, so the fit matches the simulator to what the drone believed, estimator bias
+included.
 """
 import csv
 import dataclasses
@@ -169,7 +174,7 @@ class SysIdConfig:
     horizon: int = 10
     latencies: tuple[int, ...] = (0, 1, 2)
     gain_steps: int = 500          # thrust gain alone, per latency candidate
-    residual_steps: int = 3000     # gain and residual together, at the chosen latency
+    residual_steps: int = 3000     # residual alone, at the chosen latency and fitted gain
     batch: int = 256
     learning_rate: float = 3e-3
     weight_decay: float = 1e-4
@@ -295,7 +300,11 @@ def identify(segments, env_config=None, config=SysIdConfig(), log=print):
         candidates[latency] = model, replay.evaluate(model, latency, test)
     latency = min(candidates, key=lambda k: candidates[k][1]['score_horizon'])
     gain_model, report['gain_and_latency'] = candidates[latency]
-    full = replay.fit(gain_model, latency, train, ('log_gain', 'residual'),
+    # log_gain is frozen here: near hover, a constant body-z residual force is interchangeable
+    # with a thrust-gain change, so gain and residual are not jointly identifiable. The gain is
+    # fitted alone above, then held fixed while only the residual is fitted to whatever error
+    # remains.
+    full = replay.fit(gain_model, latency, train, ('residual',),
                       config.residual_steps, config, log)
     report['full'] = replay.evaluate(full, latency, test)
 
