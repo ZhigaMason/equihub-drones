@@ -488,11 +488,12 @@ uv run --extra sim drones-eval-square runs/<name>
 - `--side 0.5 --authority 0.3` for first flights.
 - `--clockwise`, `--lap-time` and `--laps` shape the flight.
 - It aborts on `drones-fly-policy`'s limits, and when the drone is more than 0.5 m off the square.
-- `--firmware` lets the firmware's own position controller fly the same square. The attitude and
-  thrust it commands are logged in the policy's action units, so system-ID data can be collected
-  before a policy has flown. On the first `--firmware` flight, check that `a_pitch` is positive while
-  the drone accelerates forward. The sign of `controller.pitch` in the firmware log comes from reading
-  the source, not from flying.
+- `--firmware` lets the firmware's own position controller fly the same square. The roll, pitch
+  and thrust it commands are logged in the policy's action units, so system-ID data can be
+  collected before a policy has flown. On the first `--firmware` flight, check that `a_pitch` is
+  positive while the drone accelerates forward. The sign of `controller.pitch` in the firmware log
+  comes from reading the source, not from flying. The yaw action is logged as 0, because the
+  firmware holds a constant heading through the flight rather than commanding a yaw rate.
 
 Every flight is logged to `runs/<name>/flights/<stamp>-square*.csv`.
 

@@ -90,12 +90,16 @@ def test_read_state_converts_units_and_heading():
 
 
 @pytest.mark.parametrize('action', [[0.2, -0.4, 0.5, 0.3], [-0.6, 0.1, -0.2, -0.5]])
-def test_firmware_action_inverts_to_setpoint(action):
-    roll, pitch, yaw_rate, thrust = to_setpoint(np.array(action), SPEC, 38000.0, DEFAULT_SIGNS)
-    latest = {'controller.roll': roll, 'controller.pitch': pitch, 'controller.yawRate': yaw_rate,
-              'controller.cmd_thrust': float(thrust)}
-    np.testing.assert_allclose(firmware_action(latest, SPEC, 38000.0, DEFAULT_SIGNS), action,
-                               atol=1e-3)
+@pytest.mark.parametrize('yaw_rate_logged', [0.0, 123.4, -987.6])
+def test_firmware_action_inverts_to_setpoint(action, yaw_rate_logged):
+    roll, pitch, _, thrust = to_setpoint(np.array(action), SPEC, 38000.0, DEFAULT_SIGNS)
+    # controller.yawRate is rateDesired.yaw, the yaw PID's output, not a commanded rate: it cannot
+    # be inverted back into an action, whatever value the firmware happens to log there.
+    latest = {'controller.roll': roll, 'controller.pitch': pitch,
+              'controller.yawRate': yaw_rate_logged, 'controller.cmd_thrust': float(thrust)}
+    got = firmware_action(latest, SPEC, 38000.0, DEFAULT_SIGNS)
+    np.testing.assert_allclose(got[[0, 1, 3]], np.asarray(action)[[0, 1, 3]], atol=1e-3)
+    assert got[2] == 0.0
 
 
 def test_abort_when_off_the_square():

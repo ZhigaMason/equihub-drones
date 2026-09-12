@@ -111,20 +111,23 @@ def read_state(latest):
 def firmware_action(latest, spec, hover_command, signs=DEFAULT_SIGNS):
     """The firmware controller's command as the policy's normalised action: to_setpoint inverted.
 
-    This assumes the logged controller.roll/pitch/yawRate follow the setpoint conventions. Check it
-    on the first --firmware flight: the logged a_pitch should be positive while the drone
-    accelerates forward.
+    This assumes the logged controller.roll/pitch follow the setpoint conventions (attitudeDesired,
+    read the same way to_setpoint writes them). Check it on the first --firmware flight: the logged
+    a_pitch should be positive while the drone accelerates forward.
+
+    controller.yawRate is not a commanded rate: controller_pid.c logs rateDesired.yaw, the *output*
+    of the yaw attitude PID, so it cannot be inverted back into a setpoint. The yaw action is logged
+    as 0 instead: the firmware holds a constant heading through --firmware flights, and sysid
+    recovers yaw_cmd from the segment-start heading, which models that exactly.
     """
     roll = math.radians(signs['roll'] * latest['controller.roll'])
     pitch = math.radians(signs['pitch'] * latest['controller.pitch'])
-    yaw_rate = math.radians(signs['yaw_rate'] * latest['controller.yawRate'])
     thrust = spec.hover_thrust * latest['controller.cmd_thrust'] / hover_command
     if thrust >= spec.hover_thrust:
         a_thrust = (thrust - spec.hover_thrust) / (spec.thrust_max - spec.hover_thrust)
     else:
         a_thrust = (thrust - spec.hover_thrust) / (spec.hover_thrust - spec.thrust_min)
-    return np.clip([roll / spec.max_tilt, pitch / spec.max_tilt, yaw_rate / spec.max_yaw_rate,
-                    a_thrust], -1.0, 1.0)
+    return np.clip([roll / spec.max_tilt, pitch / spec.max_tilt, 0.0, a_thrust], -1.0, 1.0)
 
 
 def square_abort_reason(state, tilt, log_age, ref_pos, limits):
