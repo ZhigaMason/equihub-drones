@@ -87,9 +87,13 @@ def test_rollout_gradient_matches_finite_differences(quiet):
         return rewards.sum()
 
     a0 = jnp.array([0.05, -0.05, 0.02, 0.03])
-    grad = jax.grad(total_reward)(a0)
+    # Jitted, as SHAC takes it: eager differentiation of so_rpy rounds differently and drifts
+    # ~0.05 from the finite differences over 16 steps (it did before the yaw-gain fix too).
+    grad = jax.jit(jax.grad(total_reward))(a0)
     assert bool(jnp.isfinite(grad).all())
-    eps = 1e-3
+    # The yaw-rate slope is ~0.01: at eps=1e-3 its central difference is below one float32 ulp
+    # of the ~165 reward sum and rounds to zero.
+    eps = 1e-2
     numeric = jnp.array([(total_reward(a0.at[i].add(eps)) - total_reward(a0.at[i].add(-eps)))
                          / (2 * eps) for i in range(4)])
     np.testing.assert_allclose(grad, numeric, rtol=0.05, atol=0.05)
