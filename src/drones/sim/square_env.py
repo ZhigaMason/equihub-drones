@@ -122,7 +122,12 @@ def yaw_setpoint_step(xp, yaw_cmd, yaw_rate_action, yaw, max_yaw_rate, control_f
 
 class SquareEnv:
     """Vectorised square task. `reset(key)` and `step(state, action)` are jitted; `step` is
-    differentiable."""
+    differentiable.
+
+    Reverse mode only: forward-mode differentiation (jax.jvp/jacfwd) through CrazyFlow's so_rpy
+    returns NaN, from a `where` in scipy's quaternion normalisation, so SHAC and sysid both
+    differentiate with jax.grad/value_and_grad, never jacfwd or jvp.
+    """
 
     action_size = 4
     policy_size = OBS_SIZE
@@ -300,7 +305,13 @@ class SquareEnv:
         direction = jnp.where(jax.random.bernoulli(k[2], 0.5, (n,)), 1.0, -1.0)
         rotation = uniform(k[3], -jnp.pi, jnp.pi)
         phase = uniform(k[4], 0.0, 1.0) * lap_time
-        ref_yaw = uniform(k[5], -jnp.pi, jnp.pi)
+        # Kept away from +-pi: so_rpy reads the commanded yaw through as_euler, which wraps there,
+        # and the command is held for the whole control period (substeps). A heading sampled near
+        # +-pi can have the reference cross the wrap during those substeps, kicking the commanded
+        # yaw by ~2*pi and spinning the model up (~870 rad/s^2) for nothing real. Narrowing the
+        # band loses no generality: the policy only ever observes heading-relative quantities, the
+        # residual wrench is body-frame, and the real Kalman filter's yaw starts at 0 every flight.
+        ref_yaw = uniform(k[5], -jnp.pi / 2, jnp.pi / 2)
         # Place each square so its reference passes through the world origin as the episode starts.
         start, start_vel = square_reference(jnp, phase, side=cfg.side,
                                             corner_radius=cfg.corner_radius, lap_time=lap_time,

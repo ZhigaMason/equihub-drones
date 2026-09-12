@@ -68,6 +68,21 @@ def test_randomisation_stays_in_its_ranges(env):
     assert bool(((state.origin[:, 2] >= 0.8) & (state.origin[:, 2] <= 1.2)).all())
 
 
+def test_ref_yaw_stays_off_the_wrap():
+    """so_rpy wraps the commanded yaw through as_euler at +-pi; a heading sampled near there can
+    have the reference cross the wrap mid-control-period and kick the model. ref_yaw is sampled
+    away from the wrap instead (see _sample_episodes)."""
+    env = SquareEnv(SquareConfig(num_envs=256))
+    yaws = []
+    for seed in range(4):
+        state, _ = env.reset(jax.random.key(seed))
+        yaws.append(np.asarray(state.ref_yaw))
+    yaws = np.concatenate(yaws)
+    assert float(yaws.min()) >= -np.pi / 2 - 1e-6
+    assert float(yaws.max()) <= np.pi / 2 + 1e-6
+    assert float(yaws.min()) < -1.2 and float(yaws.max()) > 1.2
+
+
 def test_zero_action_from_the_start_stays_near_the_reference(quiet):
     state, _ = quiet.reset(jax.random.key(3))
     for _ in range(25):   # 0.5 s
