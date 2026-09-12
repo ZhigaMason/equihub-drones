@@ -82,6 +82,29 @@ def test_rollout_bootstraps_after_a_timeout_but_not_a_crash(crash, expected_loss
     assert float(loss) == pytest.approx(expected_loss, abs=1e-6)
 
 
+def test_a_non_finite_critic_update_is_skipped():
+    # A poisoned _fit_critic stands in for a minibatch whose gradient blew up: it returns changed
+    # (garbage) params alongside a non-finite loss, so the gate in _iterate must be what reverts
+    # the critic and, through it, the target network -- not just the fake returning the old values.
+    agent = SHAC(LineEnv(crash=False), SHACConfig(horizon=3, hidden=(4,), remat=False,
+                                                   critic_minibatches=1))
+    state = agent.init(jax.random.key(0))
+
+    def poisoned_fit_critic(params, opt_state, obs, returns, key):
+        garbage = jax.tree.map(lambda x: x + 1.0, params)
+        return garbage, opt_state, jnp.asarray(jnp.nan)
+
+    agent._fit_critic = poisoned_fit_critic
+    new_state, stats = agent._iterate(state)
+
+    assert float(stats['critic_skipped']) == 1.0
+    same = jax.tree.map(lambda a, b: bool(jnp.array_equal(a, b)), new_state.critic, state.critic)
+    assert all(jax.tree.leaves(same))
+    same_target = jax.tree.map(lambda a, b: bool(jnp.array_equal(a, b)), new_state.target,
+                               state.target)
+    assert all(jax.tree.leaves(same_target))
+
+
 @pytest.fixture(scope='module')
 def square():
     return SquareEnv(SquareConfig(num_envs=8))

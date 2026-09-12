@@ -94,13 +94,17 @@ def td_lambda_returns(rewards, next_values, dones, crashed, gamma, lam):
     def step(next_return, x):
         reward, next_value, done, crash = x
         blended = (1.0 - lam) * next_value + lam * next_return
-        ret = reward + gamma * jnp.where(done, next_value * (1.0 - crash), blended)
+        ret = reward + gamma * jnp.where(done, jnp.where(crash, 0.0, next_value), blended)
         return ret, ret
 
-    _, returns = jax.lax.scan(step, next_values[-1],
-                              (rewards, next_values, dones, crashed.astype(rewards.dtype)),
+    _, returns = jax.lax.scan(step, next_values[-1], (rewards, next_values, dones, crashed),
                               reverse=True)
     return returns
+
+
+def _keep_if_finite(mask, new, old):
+    """`new` where `mask` is true, `old` otherwise -- leaf-wise over a pytree."""
+    return jax.tree.map(lambda a, b: jnp.where(mask, a, b), new, old)
 
 
 class SHAC:
@@ -111,7 +115,8 @@ class SHAC:
         self.critic = Critic(config.hidden)
         self.batch_size = env.num_envs * config.horizon
         if self.batch_size % config.critic_minibatches:
-            raise ValueError('num_envs * horizon must divide into critic_minibatches')
+            raise ValueError(f'critic_minibatches ({config.critic_minibatches}) must divide '
+                             f'num_envs * horizon ({self.batch_size}) evenly')
         critic_updates = config.iterations * config.critic_epochs * config.critic_minibatches
         actor_lr, critic_lr = config.actor_lr, config.critic_lr
         if config.lr_decay:
@@ -157,11 +162,11 @@ class SHAC:
             mean, log_std = self.actor.apply(actor_params, obs['policy'])
             action = mean + jnp.exp(log_std) * eps
             env_state, next_obs, reward, done, info = self._env_step(env_state, action)
-            crashed = info['crashed'].astype(reward.dtype)
+            crashed = info['crashed']
             next_value = value(info['final_critic'])
             running = running + discount * reward
             discount = discount * cfg.gamma
-            closed = running + discount * next_value * (1.0 - crashed)
+            closed = running + discount * jnp.where(crashed, 0.0, next_value)
             total = total + jnp.sum(jnp.where(done, closed, 0.0))
             running = jnp.where(done, 0.0, running)
             discount = jnp.where(done, 1.0, discount)
@@ -187,22 +192,27 @@ class SHAC:
         (loss, (env_state, obs, traj)), grads = jax.value_and_grad(self._rollout, has_aux=True)(
             ts.actor, ts.target, env_state, obs, k_noise)
 
-        grad_norm = optax.global_norm(grads)
+        grad_norm = optax.tree.norm(grads)
         finite = jnp.isfinite(grad_norm)
         updates, actor_opt = self.actor_opt.update(grads, ts.actor_opt, ts.actor)
         actor = optax.apply_updates(ts.actor, updates)
-
-        def keep_if_finite(new, old):
-            return jax.tree.map(lambda a, b: jnp.where(finite, a, b), new, old)
-
-        actor, actor_opt = keep_if_finite(actor, ts.actor), keep_if_finite(actor_opt, ts.actor_opt)
+        actor = _keep_if_finite(finite, actor, ts.actor)
+        actor_opt = _keep_if_finite(finite, actor_opt, ts.actor_opt)
 
         returns = td_lambda_returns(traj['reward'], traj['next_value'], traj['done'],
                                     traj['crashed'], cfg.gamma, cfg.td_lambda)
         critic, critic_opt, critic_loss = self._fit_critic(ts.critic, ts.critic_opt,
                                                            traj['critic_obs'], returns, k_critic)
-        target = jax.tree.map(lambda t, c: cfg.target_alpha * t + (1 - cfg.target_alpha) * c,
-                              ts.target, critic)
+        # A non-finite critic loss or fit means at least one minibatch's gradient was non-finite:
+        # gated exactly as the actor update is, so a bad batch cannot corrupt the critic or, through
+        # it, the slowly-updated target network.
+        critic_finite = jnp.isfinite(critic_loss) & jnp.all(
+            jnp.array([jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(critic)]))
+        critic = _keep_if_finite(critic_finite, critic, ts.critic)
+        critic_opt = _keep_if_finite(critic_finite, critic_opt, ts.critic_opt)
+        new_target = jax.tree.map(lambda t, c: cfg.target_alpha * t + (1 - cfg.target_alpha) * c,
+                                  ts.target, critic)
+        target = _keep_if_finite(critic_finite, new_target, ts.target)
 
         info, done = traj['info'], traj['done']
         finished = done.sum()
@@ -214,6 +224,7 @@ class SHAC:
             'actor_loss': loss,
             'grad_norm': grad_norm,
             'skipped': (~finite).astype(jnp.float32),
+            'critic_skipped': (~critic_finite).astype(jnp.float32),
             'critic_loss': critic_loss,
             'episodes': finished,
             'episode_return': per_episode(info['episode_return']),

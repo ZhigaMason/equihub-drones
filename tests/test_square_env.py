@@ -159,6 +159,31 @@ def test_the_residual_force_pushes_the_drone():
     np.testing.assert_allclose(state.sim.states.vel[:, 0, 0], expected, rtol=0.1)
 
 
+def test_a_nan_world_crashes_and_does_not_poison_the_gradient(quiet):
+    state, _ = quiet.reset(jax.random.key(10))
+    s = state.sim.states
+    poisoned = s.replace(pos=s.pos.at[0, 0, 0].set(jnp.nan))
+    state = state.replace(sim=state.sim.replace(states=poisoned))
+
+    new_state, obs, reward, done, info = quiet.step(state, jnp.zeros((N, 4)))
+    assert bool(done[0]) and bool(info['crashed'][0])
+    assert bool(jnp.isfinite(reward).all())
+    assert all(bool(jnp.isfinite(v).all()) for v in obs.values())
+    assert bool(jnp.isfinite(info['final_critic']).all())
+    # The other worlds are unaffected: they did not crash and kept their reward.
+    assert not bool(done[1:].any())
+
+    def reward_sum(action):
+        def body(s, _):
+            s, _, r, _, _ = quiet.step(s, jnp.broadcast_to(action, (N, 4)))
+            return s, r
+        _, rewards = jax.lax.scan(body, state, None, length=4)
+        return rewards.sum()
+
+    grad = jax.grad(reward_sum)(jnp.array([0.05, -0.05, 0.02, 0.03]))
+    assert bool(jnp.isfinite(grad).all())
+
+
 def test_holding_a_far_heading_does_not_spin(quiet):
     """so_rpy's fitted yaw model is not unit-gain (see SquareEnv.yaw_gain); without compensating
     for it, a heading far from zero drives the yaw-setpoint band to its limit and spins up."""

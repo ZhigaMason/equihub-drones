@@ -207,7 +207,24 @@ class SquareEnv:
                                     self.residual)
         steps = state.steps + 1
         s = sim.states
-        pos, vel, quat, ang_vel = s.pos[:, 0], s.vel[:, 0], s.quat[:, 0], s.ang_vel[:, 0]
+        raw_pos, raw_vel = s.pos[:, 0], s.vel[:, 0]
+        raw_quat, raw_ang_vel = s.quat[:, 0], s.ang_vel[:, 0]
+        # A world whose physics diverged (so_rpy blew up) must not poison the gradient of every
+        # other world sharing this batched, differentiable step. `finite` is read off the raw
+        # values so the world is still flagged crashed; everything differentiable afterwards reads
+        # the sanitised values instead, because a `where` that only masks out a NaN *downstream*
+        # still back-propagates a NaN cotangent through the branch it drops (0 * NaN = NaN) -- the
+        # NaN has to be gone before it reaches any differentiable op, not just gone from the output.
+        finite = jax.lax.stop_gradient(
+            jnp.all(jnp.isfinite(raw_pos), -1) & jnp.all(jnp.isfinite(raw_vel), -1)
+            & jnp.all(jnp.isfinite(raw_quat), -1) & jnp.all(jnp.isfinite(raw_ang_vel), -1))
+        pos = jnp.nan_to_num(raw_pos, nan=0.0, posinf=0.0, neginf=0.0)
+        vel = jnp.nan_to_num(raw_vel, nan=0.0, posinf=0.0, neginf=0.0)
+        quat = jnp.nan_to_num(raw_quat, nan=0.0, posinf=0.0, neginf=0.0)
+        ang_vel = jnp.nan_to_num(raw_ang_vel, nan=0.0, posinf=0.0, neginf=0.0)
+        # Carried into `sim` so a non-finite world's own restart below (and CrazyFlow's internal
+        # reset blending) only ever selects between two finite states, never a raw NaN.
+        sim = self.with_states(sim, pos, vel, quat, ang_vel)
 
         ref_pos, ref_vel = self.reference_at(state, state.phase + steps / cfg.control_freq)
         e2 = jnp.sum(jnp.square(pos - ref_pos), -1)
@@ -215,7 +232,7 @@ class SquareEnv:
         up = quat_to_matrix(quat)[:, 2, 2]
         tilt = jnp.arccos(jnp.clip(jax.lax.stop_gradient(up), -1.0, 1.0))
         crashed = ((pos[:, 2] < cfg.min_height) | (tilt > cfg.max_tilt_terminate)
-                   | (e2 > cfg.max_error ** 2))
+                   | (e2 > cfg.max_error ** 2) | ~finite)
         truncated = (steps >= cfg.episode_steps) & ~crashed
         done = crashed | truncated
         reward = self._reward(e2, ev2, up, ang_vel, action, state.actions[:, 0], crashed)
@@ -237,11 +254,15 @@ class SquareEnv:
             'speed': jnp.linalg.norm(vel, axis=-1),
             'tilt': tilt,
         })
-        info['final_critic'] = final['critic']
+        # Belt and braces on top of the sanitised state: final_critic and the returned observations
+        # must be finite so a NaN world cannot reach SHAC's bootstrap value or next iteration's obs.
+        info['final_critic'] = jnp.nan_to_num(final['critic'])
         # Most steps restart a few worlds, but skip the work entirely when none do.
         state = jax.lax.cond(done.any(), lambda st: self._reset_worlds(st, done, k_reset),
                              lambda st: st, state)
-        return state, self._observe(state, k_obs), reward, done, info
+        obs = self._observe(state, k_obs)
+        obs = {k: jnp.nan_to_num(v) for k, v in obs.items()}
+        return state, obs, reward, done, info
 
     # ------------------------------------------------------------------ physics
     def advance(self, sim, action, yaw_cmd, thrust_gain, residual=None):
