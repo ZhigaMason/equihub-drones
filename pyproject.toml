@@ -22,6 +22,7 @@ drones-render-hover = "drones.rl.render:main"
 drones-export-policy = "drones.rl.export:main"
 drones-train-square = "drones.rl.train_square:main"
 drones-eval-square = "drones.rl.evaluate_square:main"
+drones-finetune-square = "drones.rl.finetune_square:main"
 drones-fly-policy = "drones.missions.fly_policy:main"
 drones-fly-square = "drones.missions.fly_square:main"
 
