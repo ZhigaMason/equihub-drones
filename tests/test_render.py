@@ -82,6 +82,46 @@ def test_top_camera_frames_the_whole_room(room):
     assert half_height >= room[1] and half_height * aspect >= room[0]
 
 
+@needs_gl
+def test_top_camera_looks_at_the_box_floor_centre():
+    # The box centre in x and y, but its floor in z: a mid-height lookat changes cam.distance's
+    # absolute height above the floor even though top_distance itself is unchanged.
+    code = textwrap.dedent('''
+        import json, jax, numpy as np
+        from drones.sim.hover_env import HoverConfig, HoverEnv
+        from drones.sim.square_env import SquareConfig, SquareEnv
+        from drones.sim.render import TrajectoryRenderer, top_distance
+        result = {}
+
+        env = HoverEnv(HoverConfig(num_envs=1))
+        state, _ = env.reset(jax.random.key(0))
+        room = np.asarray(state.room[0], float)
+        with TrajectoryRenderer(env, 'top', 160, 120) as r:
+            r.frame(state)
+            cam = r._viewer.cam
+            fovy = env.sim.mj_model.vis.global_.fovy
+            expected = top_distance(np.array([-room[0], -room[1], 0.0]),
+                                    np.array([room[0], room[1], room[2]]), 160 / 120, fovy)
+            result['hover'] = {'lookat': list(cam.lookat), 'distance': float(cam.distance),
+                               'expected_distance': expected}
+
+        env2 = SquareEnv(SquareConfig(num_envs=1))
+        state2, _ = env2.reset(jax.random.key(0))
+        lo, hi = np.array([-1.0, -2.0, 0.0]), np.array([3.0, 4.0, 5.0])
+        with TrajectoryRenderer(env2, 'top', 160, 120, bounds=lambda s, w: (lo, hi)) as r:
+            r.frame(state2)
+            result['square'] = {'lookat': list(r._viewer.cam.lookat)}
+        print(json.dumps(result))
+    ''')
+    done = subprocess.run([sys.executable, '-c', code], env=gl_env(), capture_output=True,
+                          text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-2000:]
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    np.testing.assert_allclose(result['hover']['lookat'], [0.0, 0.0, 0.0], atol=1e-6)
+    assert result['hover']['distance'] == pytest.approx(result['hover']['expected_distance'])
+    np.testing.assert_allclose(result['square']['lookat'], [1.0, 1.0, 0.0], atol=1e-6)
+
+
 @pytest.fixture(scope='module')
 def saved_run(tmp_path_factory):
     """A run directory as drones-train-hover writes it, with untrained parameters."""

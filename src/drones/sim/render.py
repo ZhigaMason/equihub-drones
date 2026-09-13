@@ -171,7 +171,9 @@ class TrajectoryRenderer:
         cam = self._viewer.cam
         if self.camera == 'top':
             fovy = self.env.sim.mj_model.vis.global_.fovy
-            cam.lookat[:] = (lo + hi) / 2
+            # x and y at the box's centre, but z at its floor: looking down from mid-height would
+            # change the camera's absolute height above the floor for the same top_distance.
+            cam.lookat[:] = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]]
             cam.distance = top_distance(lo, hi, self.width / self.height, fovy)
             cam.azimuth, cam.elevation = 90.0, -90.0
             return
