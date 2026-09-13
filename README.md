@@ -15,6 +15,7 @@ reuse the exact control law the drone flies.
 | `uv run drones-fly-policy runs/<name>/policy` | Fly a trained policy on the real drone |
 | `uv run --extra sim drones-train-square [config.yaml]` | Train a policy to fly a 1 × 1 m square with SHAC |
 | `uv run --extra sim drones-eval-square runs/<name>` | Evaluate a square policy: crash rate, laps, tracking error |
+| `uv run --extra sim drones-render-square runs/<name>` | Film a square policy flying in the simulator (MP4 or GIF) |
 | `uv run drones-fly-square runs/<name>/policy` | Fly the square on the real drone, or let the firmware fly it and log (`--firmware`) |
 | `uv run --extra sim drones-finetune-square runs/<name> --flights …` | Fit the simulator to real flights, then finetune the policy in it |
 | `uv run --extra sim pytest` | Test suite, including closed-loop stability checks and the simulator |
@@ -81,6 +82,7 @@ src/drones/
     square_experiment.py square experiments as YAML: presets and --set
     train_square.py   drones-train-square
     evaluate_square.py drones-eval-square
+    render_square.py  drones-render-square
     finetune_square.py drones-finetune-square
 configs/hover/        experiment configs: baseline, imu, camera
 configs/square/       experiment config: shac.yaml
@@ -483,6 +485,17 @@ uv run --extra sim drones-eval-square runs/<name>
   the reference.
 - `step` is differentiable end to end. Metrics are gradient-stopped, and restarted worlds carry no
   gradient from their last episode.
+
+**Watching a square policy** (`drones-render-square`), the same idea as `drones-render-hover`:
+
+```bash
+uv run --extra sim drones-render-square runs/<name>                          # renders/chase-seed0.mp4
+uv run --extra sim drones-render-square runs/<name> --camera top --episodes 3
+uv run --extra sim drones-render-square runs/<name> --out square.gif --width 320 --height 240
+```
+
+It draws the reference square in blue with the current target point highlighted, and the flown path
+as an orange trail, as `drones-eval-square` measures it.
 
 **On the drone** (`drones-fly-square`): take-off, hover calibration and landing are
 `drones-fly-policy`'s. The square starts where the drone hovers, first edge straight ahead.

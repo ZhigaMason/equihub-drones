@@ -25,6 +25,11 @@ SMALLEST_ROOM = (0.75, 0.75, 1.6)   # the smallest room HoverConfig samples
 LARGEST_ROOM = (2.5, 2.5, 3.0)
 
 
+def room_box(room):
+    """A hover room (half-width x, half-width y, ceiling height) as a (lo, hi) box."""
+    return np.array([-room[0], -room[1], 0.0]), np.array([room[0], room[1], room[2]])
+
+
 def gl_env():
     env = dict(os.environ)
     env.setdefault('MUJOCO_GL', 'egl')
@@ -49,12 +54,13 @@ def test_forward_vector_follows_mujoco_free_camera_angles():
 @pytest.mark.parametrize('room', [SMALLEST_ROOM, LARGEST_ROOM])
 def test_chase_camera_never_leaves_the_room(room):
     # Outside the room the opaque wall slabs hide the drone: the bug this camera exists to avoid.
+    lo, hi = room_box(room)
     rng = np.random.default_rng(0)
     inner = np.array(room) - 0.15
     for _ in range(2000):
         pos = rng.uniform([-inner[0], -inner[1], 0.15], [inner[0], inner[1], inner[2]])
         forward = forward_vector(rng.uniform(-180, 180), rng.uniform(-60, 0))
-        camera = pos - chase_distance(pos, forward, room, 1.2) * forward
+        camera = pos - chase_distance(pos, forward, lo, hi, 1.2) * forward
         assert abs(camera[0]) <= room[0] - CAMERA_MARGIN + 1e-9
         assert abs(camera[1]) <= room[1] - CAMERA_MARGIN + 1e-9
         assert CAMERA_MARGIN - 1e-9 <= camera[2] <= room[2] - CAMERA_MARGIN + 1e-9
@@ -62,14 +68,17 @@ def test_chase_camera_never_leaves_the_room(room):
 
 def test_chase_camera_keeps_its_distance_when_nothing_is_in_the_way():
     forward = forward_vector(0, -25)
-    assert chase_distance(np.array([1.0, 0, 1.0]), forward, LARGEST_ROOM, 1.2) == 1.2
-    assert chase_distance(np.array([0.7, 0, 1.0]), forward, SMALLEST_ROOM, 1.2) >= MIN_DISTANCE
+    lo, hi = room_box(LARGEST_ROOM)
+    assert chase_distance(np.array([1.0, 0, 1.0]), forward, lo, hi, 1.2) == 1.2
+    lo, hi = room_box(SMALLEST_ROOM)
+    assert chase_distance(np.array([0.7, 0, 1.0]), forward, lo, hi, 1.2) >= MIN_DISTANCE
 
 
 @pytest.mark.parametrize('room', [SMALLEST_ROOM, LARGEST_ROOM, (2.5, 0.75, 2.0)])
 def test_top_camera_frames_the_whole_room(room):
     aspect, fovy = 640 / 480, 45.0
-    half_height = top_distance(room, aspect, fovy) * math.tan(math.radians(fovy) / 2)
+    lo, hi = room_box(room)
+    half_height = top_distance(lo, hi, aspect, fovy) * math.tan(math.radians(fovy) / 2)
     assert half_height >= room[1] and half_height * aspect >= room[0]
 
 
@@ -142,3 +151,71 @@ def test_cli_writes_a_playable_video(saved_run, tmp_path, camera, suffix):
     frames = imageio.mimread(out, memtest=False)
     assert len(frames) >= 2
     assert frames[0].shape[:2] == (128, 160)
+
+
+@pytest.fixture(scope='module')
+def saved_square_run(tmp_path_factory):
+    """A run directory as drones-train-square writes it, with untrained parameters."""
+    import jax
+
+    from drones.rl.ppo import config_to_json, save_params
+    from drones.rl.shac import SHAC, SHACConfig, params_of
+    from drones.sim.square_env import SquareConfig, SquareEnv
+
+    run = tmp_path_factory.mktemp('square_run')
+    env_config = SquareConfig(num_envs=4)
+    shac_config = SHACConfig(horizon=4, critic_minibatches=2)
+    env = SquareEnv(env_config)
+    state = SHAC(env, shac_config).init(jax.random.key(0))
+    save_params(run / 'params.msgpack', params_of(state))
+    (run / 'config.json').write_text(json.dumps({
+        'env': json.loads(config_to_json(env_config)),
+        'shac': json.loads(config_to_json(shac_config)),
+    }))
+    return run
+
+
+@needs_gl
+def test_square_frame_draws_the_reference_path_in_blue():
+    # The reference square has no room to read a box from: bounds come from the path itself.
+    code = textwrap.dedent('''
+        import json, jax, numpy as np
+        from drones.sim.square_env import SquareConfig, SquareEnv
+        from drones.sim.render import TrajectoryRenderer
+        from drones.rl.render_square import lap_reference, square_bounds
+        env = SquareEnv(SquareConfig(num_envs=1))
+        state, _ = env.reset(jax.random.key(0))
+        path = lap_reference(env, state)
+        result = {}
+        for camera in ('chase', 'top'):
+            with TrajectoryRenderer(env, camera, 160, 120,
+                                    bounds=lambda s, w: square_bounds(env, s, w)) as r:
+                frame = r.frame(state, path=path, target=path[0]).astype(int)
+                blue = ((frame[..., 2] > 150) & (frame[..., 2] > frame[..., 0] + 60)
+                        & (frame[..., 2] > frame[..., 1] + 30))
+                result[camera] = {'shape': list(frame.shape), 'blue_pixels': int(blue.sum())}
+        print(json.dumps(result))
+    ''')
+    done = subprocess.run([sys.executable, '-c', code], env=gl_env(), capture_output=True,
+                          text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-2000:]
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    for camera, seen in result.items():
+        assert seen['shape'] == [120, 160, 3], camera
+    assert result['top']['blue_pixels'] > 20, result
+
+
+@needs_gl
+def test_render_square_cli_writes_a_playable_video(saved_square_run, tmp_path):
+    import imageio.v2 as imageio
+
+    out = tmp_path / 'flight.gif'
+    done = subprocess.run(
+        [sys.executable, '-m', 'drones.rl.render_square', str(saved_square_run), '--out', str(out),
+         '--seconds', '0.4', '--width', '64', '--height', '48'],
+        env=gl_env(), capture_output=True, text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert f'Wrote {out}' in done.stdout
+    frames = imageio.mimread(out, memtest=False)
+    assert len(frames) >= 2
+    assert frames[0].shape[:2] == (48, 64)
