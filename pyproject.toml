@@ -52,3 +52,17 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# The style the code already follows: 100 columns, single quotes.
+line-length = 100
+
+[tool.ruff.lint]
+# B008 is excluded deliberately: `config: HoverConfig = HoverConfig()` is the idiom
+# throughout sim/ and rl/, and every one of those config dataclasses is frozen, so the
+# shared-mutable-default hazard the rule warns about cannot arise here.
+select = ["E", "F", "W", "B"]
+ignore = ["B008"]
+
+[tool.ruff.format]
+quote-style = "single"

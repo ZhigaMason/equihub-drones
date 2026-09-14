@@ -159,10 +159,12 @@ def test_both_cameras_see_the_trail_and_the_hud():
         for camera in ('chase', 'top'):
             with TrajectoryRenderer(env, camera, 160, 120) as r:
                 bare = r.frame(state).astype(int)
+                def changed(frame):
+                    return int((np.abs(frame.astype(int) - bare).sum(-1) > 30).sum())
                 result[camera] = {
                     'shape': list(bare.shape),
-                    'trail': int((np.abs(r.frame(state, trail).astype(int) - bare).sum(-1) > 30).sum()),
-                    'hud': int((np.abs(r.frame(state, hud=[('time', '1.0 s')]).astype(int) - bare).sum(-1) > 30).sum()),
+                    'trail': changed(r.frame(state, trail)),
+                    'hud': changed(r.frame(state, hud=[('time', '1.0 s')])),
                 }
         print(json.dumps(result))
     ''')

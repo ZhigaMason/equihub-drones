@@ -1,9 +1,10 @@
 """Train a hover-stabilising policy on CrazyFlow, from a YAML experiment config.
 
-    uv run --extra sim drones-train-hover --preset cpu-test                  # baseline, a quick check
+    uv run --extra sim drones-train-hover --preset cpu-test        # baseline, a quick check
     uv run --extra sim drones-train-hover configs/hover/imu.yaml --preset cpu
     uv run --extra sim --extra gpu drones-train-hover configs/hover/baseline.yaml --device gpu
-    uv run --extra sim drones-train-hover --set sensors.enabled=[multiranger] --set ppo.total_steps=2e6
+    uv run --extra sim drones-train-hover --set sensors.enabled=[multiranger] \
+        --set ppo.total_steps=2e6
 
 The config defaults to configs/hover/baseline.yaml. --preset resizes it for the machine, then each
 --set SECTION.KEY=VALUE overrides a single setting. Each run writes to runs/<name>/:
@@ -37,7 +38,8 @@ def parse_args(argv=None):
     parser.add_argument('--runs', type=Path, default=Path('runs'))
     parser.add_argument('--name', help='run directory name; defaults to a timestamp')
     parser.add_argument('--log-every', type=int, default=10, help='iterations between log lines')
-    parser.add_argument('--save-every', type=int, default=100, help='iterations between checkpoints')
+    parser.add_argument('--save-every', type=int, default=100,
+                        help='iterations between checkpoints')
     return parser.parse_args(argv)
 
 

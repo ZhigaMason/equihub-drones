@@ -183,8 +183,10 @@ def render_camera(mjx_model, mjx_data, pos, quat, geom_colours, floor_geom, conf
 
     colour = geom_colours[jnp.maximum(geom, 0)]
     points = pos[:, None, :] + dirs * reach[..., None]
-    tile = jnp.floor(points[..., 0] / config.floor_tile) + jnp.floor(points[..., 1] / config.floor_tile)
-    floor = jnp.where((tile % 2 > 0)[..., None], jnp.asarray(_FLOOR_LIGHT), jnp.asarray(_FLOOR_DARK))
+    tile = (jnp.floor(points[..., 0] / config.floor_tile)
+            + jnp.floor(points[..., 1] / config.floor_tile))
+    floor = jnp.where((tile % 2 > 0)[..., None], jnp.asarray(_FLOOR_LIGHT),
+                      jnp.asarray(_FLOOR_DARK))
     colour = jnp.where((geom == floor_geom)[..., None], floor, colour)
     shade = 0.35 + 0.65 * jnp.exp(-reach / 6.0)
     image = jnp.where(hit[..., None], colour * shade[..., None], jnp.asarray(SKY))

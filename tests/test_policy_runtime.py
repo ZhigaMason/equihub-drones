@@ -16,7 +16,7 @@ def random_policy(spec=SPEC, hidden=16, seed=0):
     rng = np.random.default_rng(seed)
     sizes = [spec.observation_size, hidden, hidden, 4]
     return Policy(spec, [(rng.normal(size=(a, b)) * 0.3, rng.normal(size=b) * 0.1)
-                         for a, b in zip(sizes, sizes[1:])])
+                         for a, b in zip(sizes, sizes[1:], strict=False)])
 
 
 def test_artifact_round_trips(tmp_path):

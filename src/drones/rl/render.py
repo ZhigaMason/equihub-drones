@@ -60,7 +60,8 @@ def film(env, act, key, renderer, writer, *, episodes, max_steps, stride, label)
             errors.append(float(info['height_error'][0]))
             speeds.append(float(info['speed'][0]))
             if steps % stride == 0:
-                writer.append_data(renderer.frame(state, trail, hud(state, episode, steps, 'flying')))
+                writer.append_data(
+                    renderer.frame(state, trail, hud(state, episode, steps, 'flying')))
                 frames += 1
         last = renderer.frame(state, trail, hud(state, episode, steps, outcome))
         for _ in range(hold):
@@ -103,7 +104,8 @@ def main(argv=None):
                              'smallest; for relatively smaller text, raise --width/--height)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--open-loop', action='store_true',
-                        help='fly zero action (calibrated hover thrust, no feedback) for comparison')
+                        help='fly zero action (calibrated hover thrust, no feedback) for '
+                             'comparison')
     parser.add_argument('--device', default='cpu')
     args = parser.parse_args(argv)
     if args.episodes < 1:

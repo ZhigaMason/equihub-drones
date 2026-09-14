@@ -107,7 +107,7 @@ def test_setpoint_signs_follow_the_legacy_commander():
     assert to_setpoint([1, 0, 0, 0], SPEC, 38000)[0] == pytest.approx(deg)       # roll as is
     assert to_setpoint([0, 1, 0, 0], SPEC, 38000)[1] == pytest.approx(-deg)      # pitch inverted
     assert to_setpoint([0, 0, 1, 0], SPEC, 38000)[2] == pytest.approx(
-        -math.degrees(SPEC.max_yaw_rate))                                         # yaw rate inverted
+        -math.degrees(SPEC.max_yaw_rate))                                     # yaw rate inverted
     assert DEFAULT_SIGNS == {'roll': 1.0, 'pitch': -1.0, 'yaw_rate': -1.0}
 
 

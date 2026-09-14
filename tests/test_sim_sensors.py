@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 from drones.sim import sensors
 from drones.sim.geometry import euler_to_quat, quat_to_matrix, yaw_from_quat
 from drones.sim.hover_env import HoverConfig, HoverEnv
-from drones.sim.sensors import DOWN, RANGER_NAMES, SensorConfig
+from drones.sim.sensors import RANGER_NAMES, SensorConfig
 
 NOISELESS = SensorConfig(range_noise_abs=0.0, range_noise_rel=0.0, flow_noise=0.0,
                          gyro_noise=0.0, gravity_noise=0.0)
@@ -35,7 +35,7 @@ def pose(roll=0.0, pitch=0.0, yaw=0.0, n=2):
 
 def ranges(env, room, pos, quat):
     distances = sensors.ranger_distances(env.mjx_model, room, jnp.array([pos] * 2), quat)
-    return dict(zip(RANGER_NAMES, np.asarray(distances[0])))
+    return dict(zip(RANGER_NAMES, np.asarray(distances[0]), strict=True))
 
 
 @pytest.mark.parametrize('angles', [(0.1, -0.2, 0.3), (0.5, 0.4, -2.0), (-0.3, 0.0, 3.0)])

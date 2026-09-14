@@ -166,7 +166,7 @@ def _check_websocket_support():
         except ImportError:
             raise SystemExit(
                 'No WebSocket library installed, so the control page would '
-                'load but never connect.\nRun:  uv add websockets')
+                'load but never connect.\nRun:  uv add websockets') from None
 
 
 def main():

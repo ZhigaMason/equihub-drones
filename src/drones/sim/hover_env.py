@@ -3,8 +3,9 @@
 The policy flies the Crazyflie 2.1 Brushless the way the firmware's attitude controller is
 commanded: roll, pitch, yaw rate and collective thrust. It never sees its position. It has to hold a
 target height and cancel drift from the sensors it is given (`SensorConfig.enabled`): the Flow
-deck's optical flow and z-ranger, the Multi-ranger deck, the IMU and a colour camera. The observation
-layout and action scaling come from drones.policy.interface, shared with the deploy script.
+deck's optical flow and z-ranger, the Multi-ranger deck, the IMU and a colour camera. The
+observation layout and action scaling come from drones.policy.interface, shared with the deploy
+script.
 
 Every episode samples a new room, start pose and target height. `reset` and `step` are pure
 functions of an `EnvState`, so a whole rollout compiles into one `jax.lax.scan` and runs thousands

@@ -13,7 +13,7 @@ from drones.rl.experiment import CONFIG_DIR
 def test_the_default_config_is_the_baseline_sensors():
     env, ppo = experiment.resolve()
     assert env.sensors.enabled == BASELINE
-    assert env.num_envs == 4096 and ppo.total_steps == 200_000_000
+    assert env.num_envs == 4096 and ppo.total_steps == 500_000_000
 
 
 def test_extends_chains_and_merges_key_by_key():

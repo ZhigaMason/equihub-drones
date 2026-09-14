@@ -145,7 +145,9 @@ class PPO:
             epoch, (ts.params, ts.opt_state, ts.key), None, length=cfg.epochs)
 
         finished = traj.done.sum()
-        per_episode = lambda x: jnp.where(finished > 0, x.sum() / jnp.maximum(finished, 1), jnp.nan)
+        def per_episode(x):
+            return jnp.where(finished > 0, x.sum() / jnp.maximum(finished, 1), jnp.nan)
+
         stats = {k: v.mean() for k, v in metrics.items()}
         stats.update(
             episodes=finished,
