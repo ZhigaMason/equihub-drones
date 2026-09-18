@@ -8,6 +8,7 @@ reuse the exact control law the drone flies.
 | Command | What it does |
 | --- | --- |
 | `uv run drones-web` | Phone control page: fly/turn joystick, height slider, live ranger telemetry, emergency stop |
+| `uv run --extra camera drones-fpv` | The same page with the AI-deck camera on it; WASD and arrow keys on a desktop browser |
 | `uv run drones-wall-avoid` | Headless flight: take off, hold height, avoid walls, land on a detected ceiling |
 | `uv run --extra sim drones-train-hover [config.yaml]` | Train a hover-stabilising policy in the CrazyFlow simulator |
 | `uv run --extra sim drones-eval-hover runs/<name>` | Evaluate a trained policy against open-loop hover |
@@ -18,6 +19,7 @@ reuse the exact control law the drone flies.
 | `uv run --extra sim drones-render-square runs/<name>` | Film a square policy flying in the simulator (MP4 or GIF) |
 | `uv run drones-fly-square runs/<name>/policy` | Fly the square on the real drone, or let the firmware fly it and log (`--firmware`) |
 | `uv run --extra sim drones-finetune-square runs/<name> --flights …` | Fit the simulator to real flights, then finetune the policy in it |
+| `uv run --extra camera drones-camera` | Live view of the AI-deck camera, streamed over Wi-Fi |
 | `uv run --extra sim pytest` | Test suite, including closed-loop stability checks and the simulator |
 
 ## Setup
@@ -34,8 +36,10 @@ up.
 `CFLIB_URI` defaults to `auto`, which scans and uses whichever single interface
 is present — a Crazyradio dongle (`radio://…`) or the drone plugged straight in
 over USB (`usb://0`). Set it explicitly if you have more than one drone or
-radio in range. If the configured URI is not available, the error names what
-the scan *did* find.
+radio in range, or if the drone is plugged in over USB while the Crazyradio is
+also connected: `auto` then finds several interfaces and refuses to pick one.
+If the configured URI is not available, the error names what the scan *did*
+find.
 
 On Linux the Crazyradio needs udev rules, otherwise nothing can open the
 dongle — see the [Bitcraze USB permissions guide](https://www.bitcraze.io/documentation/repository/crazyflie-lib-python/master/installation/usb_permissions/).
@@ -52,7 +56,8 @@ src/drones/
   crazyflie/          the real-drone backend: everything that imports cflib
     link.py           URI resolution, deck checks, sensor reads, battery log
     controller.py     flight state machine on one thread: watchdog, e-stop, landing
-  teleop/web/         phone control page (FastAPI + WebSocket) and its static UI
+    camera.py         drones-camera: AI-deck image stream over Wi-Fi, shown in a window
+  teleop/web/         phone control page (FastAPI + WebSocket), its static UI, and drones-fpv
   missions/
     wall_avoid.py     headless autonomous flight
     fly_policy.py     drones-fly-policy: fly a trained policy on the real drone
@@ -145,6 +150,41 @@ a restarted server always means a fresh page.
 the drone**. Set it and both the page and the WebSocket require
 `?token=<value>`; the printed URL includes it.
 
+### With the camera, and from a keyboard
+
+```bash
+uv run --extra camera drones-fpv                         # the deck at AIDECK_HOST, 192.168.4.1
+uv run --extra camera drones-fpv --host 192.168.1.42 --mono
+```
+
+`drones-fpv` is `drones-web` with the AI-deck's camera above the controls: the
+same page, controller, watchdog and token. The server reads the deck's stream
+(see [Watching the AI-deck camera](#watching-the-ai-deck-camera)) and serves it
+to the page as MJPEG at `/video`. Video stays apart from flight control. A deck
+that is off or out of reach shows as "no video" on the panel, and the server
+tries again every 2 s.
+
+This machine needs both links at once: the Crazyradio over USB, and a Wi-Fi
+route to the deck. If the deck is its own access point, join it and open the
+page on this computer (`http://localhost:8000/`). A phone would have to join
+the deck's network too. Set `CFLIB_URI` explicitly (see [Setup](#setup)) if the
+drone is also plugged in over USB. Everything under
+[Watching the AI-deck camera](#watching-the-ai-deck-camera) applies here too,
+power saving above all.
+
+On a desktop browser the keyboard flies too, under either command:
+
+| Key | Does |
+| --- | --- |
+| W / S | forward / back at full manual speed |
+| A / D | turn left / right |
+| ↑ / ↓ | raise / lower the target height at 0.3 m/s while held |
+
+The keys follow the touch controls' rules. They do nothing on the ground or in
+auto mode, and a key held through take-off must be pressed again. When the tab
+loses focus, every key counts as released. Take-off, landing and the emergency
+stop stay on the buttons.
+
 ## How avoidance works
 
 Each horizontal ranger reading below `AVOID_DISTANCE` pushes the drone away from
@@ -210,6 +250,7 @@ Everything below lives in `.env`; the defaults are in `src/drones/config.py`.
 | `WEB_HOST` / `WEB_PORT` | `0.0.0.0` / `8000` | Server bind address |
 | `WEB_TOKEN` | *(empty)* | If set, required as `?token=…` |
 | `STICK_TIMEOUT` / `LINK_TIMEOUT` | `0.7` / `3.0` | Watchdog thresholds, s |
+| `AIDECK_HOST` / `AIDECK_PORT` | `192.168.4.1` / `5000` | Where the AI-deck's image streamer listens |
 
 Set `DRONES_NO_DOTENV=1` to ignore `.env` entirely, as the test suite does.
 
@@ -533,6 +574,72 @@ uv run --extra sim drones-finetune-square runs/<name> --flights runs/<name>/flig
 
 The logged states are the firmware's estimate, not ground truth, so the correction matches the
 simulator to what the drone believed, estimator drift included.
+
+## Watching the AI-deck camera
+
+```bash
+uv sync --extra camera                      # OpenCV; list any other extras you use too
+uv run --extra camera drones-camera         # the deck's own access point, 192.168.4.1:5000
+uv run --extra camera drones-camera --host 192.168.1.42 --mono --scale 3
+```
+
+The AI-deck streams over Wi-Fi, not the Crazyradio, so the viewer never touches
+the radio link and can run while something else flies. The deck's GAP8 must be
+running Bitcraze's `wifi-img-streamer` example from
+[aideck-gap8-examples](https://github.com/bitcraze/aideck-gap8-examples). Either
+join the deck's own access point, or let it join your network and pass the
+address it prints on the Crazyflie console (`--host`, or `AIDECK_HOST` in `.env`).
+
+Raw frames are demosaiced as a colour Bayer image. `--mono` shows them as they
+come instead, for the greyscale sensor. JPEG frames are decoded either way, in
+colour unless `--mono` is given. Q, Esc or closing the window quits. If no bytes
+arrive for 5 s, the viewer reports a dead stream.
+
+### The deck on this drone
+
+The deck runs patched firmware, not a Bitcraze release, and the latest test
+runs, including the numbers below, were made on it:
+
+- **GAP8 `wifi-img-streamer`:** colour JPEG mode; a JPEG buffer large enough
+  for a whole frame (the stock 15 KB one cut frames off, gave "Corrupt JPEG
+  data", then stopped sending); a 1 s camera-capture timeout; the network name
+  taken from `DRONE_ADDRESS` at build time.
+- **ESP firmware:** TCP send buffer 5744 bytes instead of 65535 (back to the
+  2023.06 release's value). The build also logs `Heap free=… min=… largest=…`
+  on the Crazyflie console every 2 s, a diagnostic that is not meant to stay.
+
+With a stock release the behaviour described here may differ. What the deck
+sends:
+
+- **Stream mode is colour JPEG**, 162×122 (the raw Bayer image halved and
+  demosaiced on the GAP8), about 5–10 KB a frame. It arrives as an ordinary
+  JPEG frame, so the viewer needs nothing special. Raw mode (324×244, 79 KB a
+  frame, ~650 KB/s) pushes the ESP to the edge of its memory and is not worth
+  using over Wi-Fi.
+- **Network:** `Drone E7E7E7E7E7 streaming wifi`, open, set up by the GAP8
+  (`SETUP_WIFI_AP=1`), not by the Crazyflie firmware. The deck is `192.168.4.1`,
+  this computer gets `192.168.4.2`. The address in the name is `DRONE_ADDRESS`
+  at build time. A laptop with one Wi-Fi card has no internet while on it.
+
+What the stream needs from the computer watching it:
+
+- **Wi-Fi power saving off for the drone's network.** This is the one that
+  matters. A dozing client makes the deck's access point buffer frames for it,
+  and the ESP has only ~48 KB of free memory. It runs out and deadlocks: the
+  stream freezes after 20–60 s, the ESP stops answering ping, the network then
+  disappears, and only replugging the drone brings it back. With
+  NetworkManager:
+
+  ```bash
+  nmcli connection modify "Drone E7E7E7E7E7 streaming wifi" 802-11-wireless.powersave 2
+  ```
+
+  Every computer that joins the deck's network needs this. With it off, the run
+  that confirmed the fix streamed 69 s, 509 frames and 7.7 MB without losing a
+  ping, and the ESP's free memory always recovered.
+- **One client at a time.** The ESP serves a single camera connection, so run
+  only one of `drones-camera`, `drones-fpv` or Bitcraze's viewer. A second one
+  reports that it cannot reach the deck.
 
 ## Development
 

@@ -63,3 +63,10 @@ WEB_TOKEN = os.getenv('WEB_TOKEN', '')
 # Seconds without a client message before the drone stops moving / lands.
 STICK_TIMEOUT = _f('STICK_TIMEOUT', '0.7')
 LINK_TIMEOUT = _f('LINK_TIMEOUT', '3.0')
+
+# --- AI-deck camera --------------------------------------------------------
+# Where the deck's Wi-Fi image streamer listens. 192.168.4.1 is the deck's own
+# access point; when it joins your network instead, it prints its address on
+# the Crazyflie console.
+AIDECK_HOST = os.getenv('AIDECK_HOST', '192.168.4.1')
+AIDECK_PORT = int(os.getenv('AIDECK_PORT', '5000'))

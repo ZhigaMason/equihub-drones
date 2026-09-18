@@ -21,6 +21,19 @@ const control = { forward: 0, yaw: 0, altitude: null };
 let limits = { min: 0.2, max: 2.0 };
 let draggingHeight = false;
 
+// Keyboard, for a desktop browser. `event.code` names the key's position, not its letter, so
+// WASD stays under the left hand on AZERTY and Dvorak too.
+const KEYS = { KeyW: 'forward', KeyS: 'back', KeyA: 'left', KeyD: 'right',
+               ArrowUp: 'up', ArrowDown: 'down' };
+// Metres per second the height target moves while an arrow is held: the default
+// MAX_CLIMB_SPEED, so the target never runs far ahead of what the drone can follow.
+const KEY_CLIMB = 0.3;
+const held = new Set();
+let keysDriving = false;
+let keysClimbing = false;
+// The touch controls' rule, shared with the keys: input only counts flying and not in auto.
+let manual = false;
+
 /* ---------------------------------------------------------------- socket */
 
 function connect() {
@@ -41,6 +54,10 @@ function connect() {
     const delay = Math.min(1000 * retries, 5000);
     setBar('bad', 'link lost',
            `Lost server link (${detail}), retry ${retries} in ${delay / 1000}s`);
+    // The video stream died with the server; reopen it once telemetry is back.
+    videoOn = false;
+    $('fpv-status').hidden = false;
+    $('fpv-status').textContent = 'no link to the server';
     setTimeout(connect, delay);
   };
 }
@@ -51,7 +68,10 @@ function send(payload) {
   }
 }
 
-setInterval(() => send({ type: 'control', ...control }), 1000 / SEND_HZ);
+setInterval(() => {
+  applyKeys();
+  send({ type: 'control', ...control });
+}, 1000 / SEND_HZ);
 
 /* ------------------------------------------------------------------- ui  */
 
@@ -85,6 +105,7 @@ function render(data) {
   }
   $('craft').classList.toggle('warn', anyNear);
   renderHeight(data, ranges);
+  renderVideo(data.video);
 
   $('battery').textContent = data.battery ? `${data.battery.toFixed(2)} V` : '—';
   // 3.2 V is roughly where a Crazyflie should already be on the ground.
@@ -102,11 +123,14 @@ function render(data) {
 
   // Manual controls do nothing in autonomous mode or on the ground; show
   // that rather than silently swallowing the input.
-  const manual = flying && !data.auto;
-  for (const el of document.querySelectorAll('.pad, .slider')) {
+  manual = flying && !data.auto;
+  for (const el of document.querySelectorAll('.pad, .slider, #keys')) {
     el.classList.toggle('disabled', !manual);
   }
-  if (!manual) releaseFly();
+  if (!manual) {
+    releaseFly();
+    held.clear();
+  }
 }
 
 function pctFor(metres) {
@@ -215,14 +239,79 @@ pointerControl($('slider-height'), {
   onRelease: () => { draggingHeight = false; },
 });
 
+/* Keyboard: W/S forward/back, A/D turn, Up/Down arrows move the height target. */
+document.addEventListener('keydown', (event) => {
+  const key = KEYS[event.code];
+  if (!key || event.ctrlKey || event.metaKey || event.altKey) return;
+  event.preventDefault();                   // the arrows would scroll the page
+  // Auto-repeat is ignored, so a key already held through take-off does nothing until it is
+  // pressed again, just as the pad needs a fresh touch.
+  if (manual && !event.repeat) held.add(key);
+});
+document.addEventListener('keyup', (event) => {
+  const key = KEYS[event.code];
+  if (key) held.delete(key);
+});
+
+const axis = (plus, minus) => (held.has(plus) ? 1 : 0) - (held.has(minus) ? 1 : 0);
+
+// Runs once per control frame, so the height moves at KEY_CLIMB whatever else is going on.
+function applyKeys() {
+  if (held.size) {
+    control.forward = axis('forward', 'back');
+    control.yaw = axis('left', 'right');    // +yaw turns left
+    keysDriving = true;
+  } else if (keysDriving) {
+    control.forward = 0;
+    control.yaw = 0;
+    keysDriving = false;
+  }
+
+  const climb = axis('up', 'down');
+  if (climb && control.altitude !== null && control.altitude !== undefined) {
+    // Stops telemetry adopting the drone's reported target, which lags ours by a frame or two.
+    draggingHeight = true;
+    keysClimbing = true;
+    const next = control.altitude + climb * KEY_CLIMB / SEND_HZ;
+    control.altitude = Math.max(limits.min, Math.min(limits.max, next));
+    renderHeight({ desired_altitude: control.altitude }, latest.ranges || {});
+  } else if (keysClimbing) {
+    draggingHeight = false;
+    keysClimbing = false;
+  }
+}
+
 function centreSticks() {
   releaseFly();
+  held.clear();
   draggingHeight = false;
+}
+
+/* ----------------------------------------------------------------- video */
+
+// Only drones-fpv reports `video`; under drones-web the panel stays hidden.
+let videoOn = false;
+
+function renderVideo(status) {
+  $('fpv').hidden = status === undefined;
+  if (status === undefined) return;
+  if (!videoOn) {
+    // A fresh URL, so the stream reopens after a server restart instead of staying frozen.
+    $('fpv-img').src = `/video?token=${encodeURIComponent(token)}&t=${Date.now()}`;
+    videoOn = true;
+  }
+  $('fpv-status').hidden = status === 'live';
+  $('fpv-status').textContent = status;
 }
 
 /* --------------------------------------------------------------- buttons */
 
-const button = (id, handler) => $(id).addEventListener('click', handler);
+// Blurred after each click: a focused button takes the next Space or Enter as another click,
+// and flying from the keyboard makes stray keystrokes likely.
+const button = (id, handler) => $(id).addEventListener('click', (event) => {
+  event.currentTarget.blur();
+  handler(event);
+});
 
 button('btn-connect', () => {
   const connected = latest.state !== 'disconnected' && latest.state !== 'connecting';

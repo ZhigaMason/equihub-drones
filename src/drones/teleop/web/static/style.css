@@ -85,6 +85,29 @@ body {
   font-size: 12.5px;
 }
 
+/* --- FPV camera, drones-fpv only ----------------------------------------- */
+#fpv {
+  position: relative;
+  aspect-ratio: 324 / 244;            /* the frame Bitcraze's wifi-img-streamer sends */
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+#fpv[hidden], #fpv-status[hidden] { display: none; }
+#fpv img { display: block; width: 100%; height: 100%; object-fit: contain; }
+#fpv-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--dim);
+  background: #000c;
+}
+
 /* --- ranger readout ------------------------------------------------------ */
 #radar {
   background: var(--panel);
@@ -269,6 +292,29 @@ b.near { color: var(--bad); }
   color: var(--dim);
 }
 .slider.disabled, .pad.disabled { opacity: .3; }
+
+/* Keyboard legend: only where there is a keyboard, i.e. a fine pointer that can hover. */
+#keys {
+  display: none;
+  margin: 0 4px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--dim);
+}
+@media (hover: hover) and (pointer: fine) { #keys { display: block; } }
+#keys.disabled { opacity: .3; }
+kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  margin: 0 1px;
+  padding: 1px 5px;
+  font: inherit;
+  font-weight: 650;
+  color: var(--text);
+  background: var(--panel-hi);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
 
 /* --- buttons ------------------------------------------------------------- */
 #buttons {

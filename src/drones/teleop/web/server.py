@@ -1,7 +1,9 @@
 """Self-hosted control page for the Crazyflie, reachable from a phone on the LAN.
 
 Run with:  uv run drones-web
+     or:   uv run --extra camera drones-fpv    (the same page, with the AI-deck camera on it)
 """
+import argparse
 import asyncio
 import json
 import logging
@@ -11,10 +13,11 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from drones import config
+from drones.crazyflie.camera import CameraFeed
 from drones.crazyflie.controller import DroneController
 
 logging.basicConfig(level=logging.INFO,
@@ -44,6 +47,11 @@ class _NoCacheStatic(StaticFiles):
 
 # Telemetry pushes per second.
 TELEMETRY_HZ = 10
+# Seconds an open connection may hold up shutdown; see uvicorn_config().
+SHUTDOWN_GRACE = 1.0
+# How often an open /video response looks for a newer frame; the deck sends at most ~30 a second.
+VIDEO_POLL = 0.02
+BOUNDARY = 'frame'
 
 controller = DroneController()
 
@@ -51,12 +59,19 @@ controller = DroneController()
 @asynccontextmanager
 async def lifespan(_app):
     controller.start()
+    if app.state.feed is not None:
+        app.state.feed.start()
     yield
+    # The landing first: nothing about video is worth delaying it for.
     controller.stop()
+    if app.state.feed is not None:
+        app.state.feed.stop()
 
 
 app = FastAPI(title='Crazyflie control', lifespan=lifespan)
 app.mount('/static', _NoCacheStatic(directory=STATIC), name='static')
+# A CameraFeed under drones-fpv; None under drones-web, which never touches the AI-deck.
+app.state.feed = None
 
 
 def _authorised(token):
@@ -69,6 +84,31 @@ def index(token: str = Query('')):
         return PlainTextResponse('Forbidden: bad or missing token', 403)
     return FileResponse(STATIC / 'index.html',
                         headers={'Cache-Control': 'no-store, must-revalidate'})
+
+
+@app.get('/video')
+def video(token: str = Query('')):
+    """The AI-deck camera as MJPEG, which an <img> plays with no script at all."""
+    if not _authorised(token):
+        return PlainTextResponse('Forbidden: bad or missing token', 403)
+    feed = app.state.feed
+    if feed is None:
+        return PlainTextResponse('No camera here: start the server with drones-fpv', 404)
+    return StreamingResponse(_mjpeg(feed),
+                             media_type=f'multipart/x-mixed-replace; boundary={BOUNDARY}',
+                             headers={'Cache-Control': 'no-store'})
+
+
+async def _mjpeg(feed):
+    seen = 0
+    while True:
+        count, jpeg = feed.latest()
+        if count != seen and jpeg is not None:
+            seen = count
+            head = (f'--{BOUNDARY}\r\nContent-Type: image/jpeg\r\n'
+                    f'Content-Length: {len(jpeg)}\r\n\r\n')
+            yield head.encode() + jpeg + b'\r\n'
+        await asyncio.sleep(VIDEO_POLL)
 
 
 @app.websocket('/ws')
@@ -125,11 +165,19 @@ def _handle(message):
         controller.submit(kind, bool(message.get('value')))
 
 
+def _telemetry():
+    data = controller.snapshot()
+    if app.state.feed is not None:
+        # Its presence is what tells the page to show the video panel at all.
+        data['video'] = app.state.feed.status()
+    return data
+
+
 async def _push_telemetry(socket_):
     period = 1 / TELEMETRY_HZ
     try:
         while True:
-            await socket_.send_json(controller.snapshot())
+            await socket_.send_json(_telemetry())
             await asyncio.sleep(period)
     except asyncio.CancelledError:
         raise
@@ -169,16 +217,59 @@ def _check_websocket_support():
                 'load but never connect.\nRun:  uv add websockets') from None
 
 
+def uvicorn_config(host, port):
+    """The server's settings, shared by main() and the tests.
+
+    uvicorn runs the lifespan shutdown - controller.stop(), which lands the
+    drone - only after waiting for open connections, and with no grace period
+    that wait has no limit. An open /video stream never ends by itself.
+    Measured on uvicorn 0.52.4 and Starlette 1.6, shutdown ends it anyway,
+    landing within 0.2 s with or without the grace period. The grace period is
+    the backstop if an upgrade ever changes that.
+    """
+    return uvicorn.Config(app, host=host, port=port, log_level='warning',
+                          timeout_graceful_shutdown=SHUTDOWN_GRACE)
+
+
 def main():
     _check_websocket_support()
     suffix = f'?token={config.WEB_TOKEN}' if config.WEB_TOKEN else ''
     print(f'\n  Open on your phone:  '
-          f'http://{_lan_address()}:{config.WEB_PORT}/{suffix}\n', flush=True)
+          f'http://{_lan_address()}:{config.WEB_PORT}/{suffix}\n'
+          f'  On this computer:    '
+          f'http://localhost:{config.WEB_PORT}/{suffix}\n', flush=True)
     if not config.WEB_TOKEN:
         print('  WEB_TOKEN is unset: anyone on this network can fly the '
               'drone.\n', flush=True)
-    uvicorn.run(app, host=config.WEB_HOST, port=config.WEB_PORT,
-                log_level='warning')
+    try:
+        uvicorn.Server(uvicorn_config(config.WEB_HOST, config.WEB_PORT)).run()
+    except KeyboardInterrupt:
+        # uvicorn re-raises the Ctrl-C it handled once shutdown is done;
+        # uvicorn.run() swallows it the same way.
+        pass
+
+
+def main_fpv(argv=None):
+    """drones-fpv: the same page and controller, with the AI-deck camera on it."""
+    parser = argparse.ArgumentParser(
+        description='The drones-web control page, with the AI-deck camera feed on it.')
+    parser.add_argument('--host', default=config.AIDECK_HOST,
+                        help="the AI-deck's address (default %(default)s; AIDECK_HOST)")
+    parser.add_argument('--port', type=int, default=config.AIDECK_PORT,
+                        help="the deck streamer's TCP port (default %(default)s; AIDECK_PORT)")
+    parser.add_argument('--mono', action='store_true',
+                        help='the deck has the greyscale Himax: send raw frames without '
+                             'demosaicing them into false colour')
+    args = parser.parse_args(argv)
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        raise SystemExit('drones-fpv needs OpenCV to encode raw frames.\n'
+                         'Run:  uv run --extra camera drones-fpv') from None
+
+    app.state.feed = CameraFeed(args.host, args.port, mono=args.mono)
+    print(f'\n  Camera: AI-deck at {args.host}:{args.port}', flush=True)
+    main()
 
 
 if __name__ == '__main__':

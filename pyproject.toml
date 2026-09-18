@@ -26,6 +26,8 @@ drones-render-square = "drones.rl.render_square:main"
 drones-finetune-square = "drones.rl.finetune_square:main"
 drones-fly-policy = "drones.missions.fly_policy:main"
 drones-fly-square = "drones.missions.fly_square:main"
+drones-camera = "drones.crazyflie.camera:main"
+drones-fpv = "drones.teleop.web.server:main_fpv"
 
 [project.optional-dependencies]
 sim = [
@@ -38,6 +40,9 @@ sim = [
 ]
 gpu = [
     "jax[cuda12]>=0.11.1 ; sys_platform == 'linux'",
+]
+camera = [
+    "opencv-python>=5.0.0.93",
 ]
 
 [build-system]

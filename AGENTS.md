@@ -37,9 +37,10 @@ to the source instead.
 
 ## Never do these
 
-- **Never fly the real drone.** `drones-fly-policy`, `drones-fly-square`, `drones-wall-avoid` and
-  `drones-web` all spin motors on hardware a person is standing next to. Only a human starts them,
+- **Never fly the real drone.** `drones-fly-policy`, `drones-fly-square`, `drones-wall-avoid`,
+  `drones-web` and `drones-fpv` all spin motors on hardware a person is standing next to. Only a human starts them,
   including with `--dry-run`, which still connects to the drone. Ask; do not run them yourself.
+  `drones-camera` spins nothing but connects to the drone's AI-deck, so the same hook blocks it.
 - **Never `git add -A` or `git add .`** Add the files you changed, by name. The repo root collects
   large untracked artefacts (`flight*.gif` is tens of megabytes) that must not land in git.
 - **Never commit `runs/`, `checkpoints/`, `wandb/` or `.env`.** They are git-ignored; keep it that
@@ -54,7 +55,7 @@ Dependencies only ever point downwards. `tests/test_architecture.py` fails if th
 | --- | --- | --- |
 | `control/` | stdlib, `drones.config` | The flight control law. No cflib, no web, no JAX. |
 | `policy/` | numpy | Runs on the flying laptop, which has neither JAX nor the simulator. |
-| `crazyflie/`, `missions/` | + cflib, numpy | Everything that talks to real hardware. |
+| `crazyflie/`, `missions/` | + cflib, numpy | Everything that talks to real hardware. `crazyflie/camera.py` also uses OpenCV (the `camera` extra), imported inside functions only. |
 | `sim/`, `rl/` | + JAX, flax, optax, CrazyFlow | The `sim` extra. Never imported by the above. |
 
 If you need something from `sim/` in `missions/`, that is the signal it belongs in `policy/`
@@ -95,6 +96,19 @@ layout or an action scaling:
 - **NaN must be removed before it reaches a differentiable op**, not just masked out of the output:
   a `where` that drops a NaN downstream still backpropagates a NaN cotangent (`0 * NaN = NaN`). See
   `sim/square_env.py:_step` for the pattern to follow.
+- **Nothing may hold up the landing on shutdown.** uvicorn runs the lifespan shutdown —
+  `controller.stop()`, which lands the drone — only after waiting for open connections, without
+  limit by default, and the `drones-fpv` MJPEG stream never ends by itself. On uvicorn 0.52.4 and
+  Starlette 1.6, shutdown was measured to end the stream anyway, landing in 0.2 s. Start the server
+  through `teleop/web/server.py:uvicorn_config` all the same: its `SHUTDOWN_GRACE` is the backstop,
+  and `test_an_open_video_stream_does_not_hold_up_the_landing` guards the behaviour across upgrades.
+- **An AI-deck stream that freezes is not a bug in `crazyflie/camera.py`.** It was expensive to
+  find: the laptop's Wi-Fi power saving makes the deck's ESP buffer frames until its ~48 KB heap
+  runs out and it deadlocks. The fix is `802-11-wireless.powersave 2` on the drone's network
+  profile; three rounds of ESP buffer tuning did not help. The ESP also serves one camera client
+  at a time. The deck runs patched firmware (colour JPEG, 162×122) and the latest runs were
+  made on it; README, "The deck on this drone", lists the changes. Read it before touching the
+  stream code or the deck.
 
 ## Style
 
@@ -166,6 +180,10 @@ Check both directions — what must be blocked *and* what must still be allowed.
 had false positives on the first attempt (`grep drones-fly-policy README.md` was blocked;
 `git -C . add -A` was not).
 
+`no-live-drone.sh` judges every line of a command, so a Bash heredoc or script whose *text*
+mentions an entry point (a README edit via `python3 - <<EOF`) is blocked too. Edit docs with the
+Edit tool instead.
+
 ## Commands
 
 Entry points are defined in `pyproject.toml`. The `train` and `fly-check` skills in `.claude/skills/`
@@ -174,6 +192,7 @@ cover the two workflows with real sequencing to get right.
 ```bash
 uv sync --extra sim                  # CPU
 uv sync --extra sim --extra gpu      # adds jax[cuda12]
+uv sync --extra camera               # OpenCV, for drones-camera and drones-fpv (AI-deck video)
 ```
 
 `uv sync` drops extras you do not name, so list every one you want each time.
