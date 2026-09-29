@@ -23,6 +23,8 @@ drones-export-policy = "drones.rl.export:main"
 drones-train-square = "drones.rl.train_square:main"
 drones-eval-square = "drones.rl.evaluate_square:main"
 drones-render-square = "drones.rl.render_square:main"
+drones-download-scenes = "drones.sim.scenes:main"
+drones-explore-scene = "drones.sim.explore:main"
 drones-finetune-square = "drones.rl.finetune_square:main"
 drones-fly-policy = "drones.missions.fly_policy:main"
 drones-fly-square = "drones.missions.fly_square:main"
@@ -35,8 +37,11 @@ sim = [
     "flax>=0.12.9",
     "imageio>=2.37",
     "imageio-ffmpeg>=0.6",
+    "modelscope>=1.40.1",
     "optax>=0.2.8",
+    "pillow>=12.3",
     "pyyaml>=6.0.3",
+    "wasmtime>=49.0",
 ]
 gpu = [
     "jax[cuda12]>=0.11.1 ; sys_platform == 'linux'",

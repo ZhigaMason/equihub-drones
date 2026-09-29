@@ -3,11 +3,17 @@
     uv run --extra sim drones-render-square runs/<name>
     uv run --extra sim drones-render-square runs/<name> --camera top --episodes 3
     uv run --extra sim drones-render-square runs/<name> --uncorrected --out uncorrected.mp4
+    uv run --extra sim drones-render-square runs/<name> --scene scenes/Nemacolin.glb
 
 Flies fresh episodes with the policy's deterministic actions, as drones-eval-square does, and films
 them through CrazyFlow's MuJoCo renderer: the reference square in blue with the current target point
 highlighted, and the flown path as an orange trail. Writes runs/<name>/renders/<camera>-seed<N>.mp4
 unless --out says otherwise; its extension picks the format (.mp4, .gif, ...).
+
+--scene films it inside a scanned house from IndoorUAV (see drones.sim.scenes, and
+drones-download-scenes to fetch them). The scan is scenery only: the policy flies exactly as it
+would without it. Each episode the scan is moved so its most open patch of floor is under the
+square, and the chase camera is kept inside that patch so it does not end up in a wall.
 
 Headless Linux renders through EGL. Set MUJOCO_GL to use another backend, such as glfw on a desktop.
 """
@@ -49,9 +55,35 @@ def square_bounds(env, state, world):
     return lo, hi
 
 
-def film(env, act, key, renderer, writer, *, episodes, max_steps, stride, label):
+def path_centre(env, state):
+    """The middle of world 0's reference square, (3,) with z = 0."""
+    import numpy as np
+
+    path = lap_reference(env, state)
+    return np.array([*(path[:, :2].min(0) + path[:, :2].max(0)) / 2, 0.0])
+
+
+def scene_bounds(env, state, clearance, cut_height):
+    """A `bounds` function inside a scene: the clear box `drones.sim.scenes` found, which
+    `move_scene` has centred on the square."""
+    import numpy as np
+
+    centre = path_centre(env, state)
+    half = np.array([clearance, clearance, 0.0])
+    return centre - half, centre + half + np.array([0.0, 0.0, cut_height])
+
+
+def move_scene(model, geoms, base):
+    """An `on_reset(state)` that moves the scene's geoms so its origin sits under the square."""
+    def on_reset(env, state):
+        model.geom_pos[geoms] = base + path_centre(env, state)
+    return on_reset
+
+
+def film(env, act, key, renderer, writer, *, episodes, max_steps, stride, label, on_reset=None):
     """Fly `episodes` fresh episodes in world 0, appending frames to `writer`.
 
+    `on_reset(env, state)` is called at the start of each episode, before its first frame.
     Returns (per-episode summaries, frames written).
     """
     import jax
@@ -82,6 +114,8 @@ def film(env, act, key, renderer, writer, *, episodes, max_steps, stride, label)
     for episode, k in enumerate(jax.random.split(key, episodes), 1):
         state, obs = env.reset(k)
         renderer.reset()
+        if on_reset is not None:
+            on_reset(env, state)
         path = lap_reference(env, state)
         trail = [np.asarray(state.sim.states.pos[0, 0])]
         errors, speeds, outcome, steps = [], [], 'no crash', 0
@@ -148,6 +182,8 @@ def main(argv=None):
                              'comparison')
     parser.add_argument('--uncorrected', action='store_true',
                         help='ignore a fitted residual (runs from drones-finetune-square)')
+    parser.add_argument('--scene', type=Path,
+                        help='a Gibson .glb from drones-download-scenes to fly the square in')
     parser.add_argument('--device', default='cpu')
     args = parser.parse_args(argv)
     if args.episodes < 1:
@@ -156,6 +192,8 @@ def main(argv=None):
         parser.error('--fps and --seconds must be positive')
     if min(args.width, args.height) < 16:
         parser.error('--width and --height must be at least 16')
+    if args.scene is not None and not args.scene.is_file():
+        parser.error(f'no scene at {args.scene}; fetch one with drones-download-scenes')
 
     # The GL backend is fixed when mujoco is imported, so this goes before anything imports it.
     if sys.platform.startswith('linux'):
@@ -175,7 +213,7 @@ def main(argv=None):
     warnings.filterwarnings('ignore', message=r'os\.fork\(\) was called', category=RuntimeWarning)
 
     from drones.rl.evaluate_square import load_square_run
-    from drones.sim.render import TrajectoryRenderer
+    from drones.sim.render import HIDDEN_GROUP, TrajectoryRenderer
 
     with jax.default_device(jax.devices(args.device)[0]):
         env, agent, params = load_square_run(args.run, 1, args.device,
@@ -192,15 +230,34 @@ def main(argv=None):
         if args.seconds is not None:
             max_steps = min(max_steps, max(1, round(args.seconds * control_freq)))
         suffix = '-open-loop' if args.open_loop else ''
+        if args.scene is not None:
+            suffix += f'-{args.scene.stem}'
         out = args.out or args.run / 'renders' / f'{args.camera}-seed{args.seed}{suffix}.mp4'
         out.parent.mkdir(parents=True, exist_ok=True)
+        def bounds(state, world):
+            return square_bounds(env, state, world)
+        on_reset = None
+        if args.scene is not None:
+            from drones.sim import scenes
+
+            scene = scenes.load(args.scene)
+            lower, upper = scenes.attach(env.sim, scene)
+            model = env.sim.mj_model
+            if args.camera == 'top':
+                # Everything above CUT_HEIGHT, the ceiling and the upper walls, is in `upper`.
+                model.geom_group[upper] = HIDDEN_GROUP
+            else:
+                def bounds(state, world):
+                    return scene_bounds(env, state, scene.clearance, scenes.CUT_HEIGHT)
+            geoms = lower + upper
+            on_reset = move_scene(model, geoms, model.geom_pos[geoms].copy())
+            print(f'Scene {scene.name}: {scene.clearance:.2f} m clear around the square')
         with (TrajectoryRenderer(env, args.camera, args.width, args.height,
-                                 font_scale=args.font_scale,
-                                 bounds=lambda s, w: square_bounds(env, s, w)) as renderer,
+                                 font_scale=args.font_scale, bounds=bounds) as renderer,
               open_writer(out, fps) as writer):
             summaries, frames = film(env, act, jax.random.key(args.seed), renderer, writer,
                                      episodes=args.episodes, max_steps=max_steps, stride=stride,
-                                     label=label)
+                                     label=label, on_reset=on_reset)
 
     print(f'Wrote {out}: {frames} frames at {fps:g} fps, {args.camera} camera')
     for s in summaries:

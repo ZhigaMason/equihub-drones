@@ -23,3 +23,6 @@ runs/
 checkpoints/
 wandb/
 recordings/
+
+# Scanned scenes from IndoorUAV (drones-download-scenes), tens of MB each
+scenes/

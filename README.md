@@ -17,6 +17,8 @@ reuse the exact control law the drone flies.
 | `uv run --extra sim drones-train-square [config.yaml]` | Train a policy to fly a 1 × 1 m square with SHAC |
 | `uv run --extra sim drones-eval-square runs/<name>` | Evaluate a square policy: crash rate, laps, tracking error |
 | `uv run --extra sim drones-render-square runs/<name>` | Film a square policy flying in the simulator (MP4 or GIF) |
+| `uv run --extra sim drones-download-scenes` | Fetch ten scanned houses from IndoorUAV (ModelScope) to film the square in |
+| `uv run --extra sim drones-explore-scene` | Fly the simulated drone around those houses: WASD, arrows for height and turning; `--benchmark` shows EQA questions about them |
 | `uv run drones-fly-square runs/<name>/policy` | Fly the square on the real drone, or let the firmware fly it and log (`--firmware`) |
 | `uv run --extra sim drones-finetune-square runs/<name> --flights …` | Fit the simulator to real flights, then finetune the policy in it |
 | `uv run --extra camera drones-camera` | Live view of the AI-deck camera, streamed over Wi-Fi |
@@ -74,6 +76,10 @@ src/drones/
     square_env.py     the square task: differentiable, for SHAC
     residual.py       a learned force and torque correcting the dynamics
     calibration.py    hover-thrust calibration
+    scenes.py         drones-download-scenes: IndoorUAV's scanned houses, as scenery for the renderer
+    explore.py        drones-explore-scene: fly the simulated drone around a scan from the keyboard
+    eqa.py            HM-EQA, MT-HM3D, EXPRESS-Bench and A-EQA questions, placed in the scans
+    basis.py          decodes HM3D's Basis Universal textures (basisu compiled to WebAssembly)
   rl/                 PPO in JAX (sim extra)
     networks.py       actor-critic; only the critic sees privileged simulator state
     ppo.py            rollout + GAE + updates compiled into one jitted call
@@ -537,6 +543,82 @@ uv run --extra sim drones-render-square runs/<name> --out square.gif --width 320
 
 It draws the reference square in blue with the current target point highlighted, and the flown path
 as an orange trail, as `drones-eval-square` measures it.
+
+**In a real house.** `--scene` films the square inside a scanned home from
+[IndoorUAV](https://www.modelscope.cn/datasets/valyentine/Indoor_UAV) (AAAI 2026), which ships
+habitat-sim's Gibson, HM3D, MP3D and Replica scenes in a single 47 GB zip.
+`drones-download-scenes` range-reads only the members it needs: by default the ten Gibson scenes
+with the most IndoorUAV trajectories, 254 MB in total, into `scenes/` (git-ignored).
+
+```bash
+uv run --extra sim drones-download-scenes                     # or name scenes: ... Adrian Bowlus
+uv run --extra sim drones-render-square runs/<name> --scene scenes/Bowlus.glb
+uv run --extra sim drones-render-square runs/<name> --scene scenes/Bowlus.glb --camera top
+```
+
+The scan is scenery only, added to the renderer's model and never to the dynamics or the sensors,
+so the policy flies exactly as without it. Each episode the scan is moved so its most open patch of
+floor on any storey is under the square. The chase camera stays inside that patch, and the top
+camera cuts the house off at 2 m so walls and ceiling do not hide the flight. Clear space found in
+the default ten ranges from 0.95 m (Capistrano) to 3.15 m (Bowlus), measured as a half-width.
+
+**Flying around them yourself** (`drones-explore-scene`) opens a window with the simulated drone in
+a scan, flown from the keyboard. This is simulator only; it never touches the radio.
+
+```bash
+uv run --extra sim drones-explore-scene                       # every scene in scenes/
+uv run --extra sim drones-explore-scene scenes/Bowlus.glb     # start in this one
+```
+
+| Key | | Key | |
+| --- | --- | --- | --- |
+| W / S | forward / back | A / D | left / right |
+| Up / Down | climb / descend | Left / Right (Q / E) | turn |
+| Shift | twice as fast | C | chase or first-person camera |
+| N / P | next / previous scene | R | back to the start |
+| H | hide the key help | Esc | quit |
+
+The keys move a setpoint for CrazyFlow's own position controller, flying the same cf21B_500 the
+square task trains on. Let go of everything and the drone holds its position. It starts on the floor
+at the scan's most open spot and takes off to 1 m. Walls, furniture, floor and ceiling stop the
+setpoint 0.15 m short, and it slides along them, but they are not physics. A fast approach can still
+overshoot a little into a wall, and gaps in a scan (open windows, unscanned rooms) let it out. It
+runs at about 140 fps at 1280 × 720 on this laptop.
+
+**With benchmark prompts.** Four EQA benchmarks ask questions about HM3D houses, and IndoorUAV
+comes with navigation instructions for its own scenes. IndoorUAV's archive holds all 900 HM3D train
+and val scenes, so `--benchmark` fetches a benchmark's prompts and the scenes it asks the most
+about. The explorer shows each prompt in a panel while you fly around looking for the answer or
+following the instruction.
+
+| Benchmark | Questions | Scenes | The drone starts |
+| --- | --- | --- | --- |
+| [HM-EQA](https://github.com/Stanford-ILIAD/explore-eqa) | 500, multiple choice | 266 | at the benchmark's pose for that floor |
+| [MT-HM3D](https://huggingface.co/datasets/zmling/MT-HM3D) | 1,587, multiple choice, several targets | 828 | at its pose for that floor (88 % of questions), else on the open floor |
+| [EXPRESS-Bench](https://github.com/HCPLab-SYSU/EXPRESS-Bench) | 2,044, open answer | 174 | at the question's start, with its reference walk drawn to the goal |
+| [A-EQA](https://github.com/facebookresearch/open-eqa) (OpenEQA's 184) | 184, open answer | 57 | on the open floor: A-EQA gives no pose |
+| [IndoorUAV](https://www.modelscope.cn/datasets/valyentine/Indoor_UAV) (`indoor-uav`) | 7,200 flight instructions; Space shows the detailed one | 982 (its Gibson and HM3D ones) | in the air where the recorded flight starts, with the flight drawn to its end |
+
+IndoorUAV's 818 MP3D and Replica trajectories are left out, since those scenes do not load here.
+Its instructions come from `without_screenshot.zip` (500 MB). The first `--benchmark indoor-uav`
+indexes that zip's 1.4 M files once (about 40 s). After that, each scene's instructions arrive in
+one request of about 0.25 MB. Any scene already in `scenes/`, such as the ten default Gibson
+scenes, gets its instructions automatically.
+
+```bash
+uv run --extra sim drones-explore-scene --benchmark indoor-uav            # IndoorUAV's scenes on disk
+uv run --extra sim drones-explore-scene --benchmark indoor-uav Nemacolin  # start in this one
+uv run --extra sim drones-download-scenes --benchmark hm-eqa --count 5   # questions + 5 scenes
+uv run --extra sim drones-explore-scene --benchmark hm-eqa               # its downloaded scenes
+uv run --extra sim drones-explore-scene --benchmark express-bench --question 12   # fetches its scene
+uv run --extra sim drones-download-scenes 00006-HkseAnWCgqk               # any HM3D scene by id
+```
+
+`]` and `[` step through the questions about the current scene, restarting the drone at each one's
+pose. Space reveals the answer (IndoorUAV: the detailed instruction), PgDn / PgUp scroll a prompt
+longer than the window, and `I` hides the panel. An HM3D scene is 25–50 MB and takes about
+20 s to fetch the first time. Most of that is decoding its Basis Universal textures, done once
+through the `wasmtime` wheel, then cached as a plain `.glb` in `scenes/hm3d/`.
 
 **On the drone** (`drones-fly-square`): take-off, hover calibration and landing are
 `drones-fly-policy`'s. The square starts where the drone hovers, first edge straight ahead.

@@ -109,6 +109,31 @@ layout or an action scaling:
   at a time. The deck runs patched firmware (colour JPEG, 162×122) and the latest runs were
   made on it; README, "The deck on this drone", lists the changes. Read it before touching the
   stream code or the deck.
+- **Scanned scenes (`sim/scenes.py`) are scenery, never physics.** `scenes.attach` swaps only
+  `sim.mj_model` / `sim.mj_data`, the model `Sim.render` draws; the MJX model the dynamics and
+  sensors run on never sees the scan. Keep it that way. A 500k-triangle non-convex mesh does not
+  belong in MJX, and a policy must fly the same with or without a backdrop. Where a scan must
+  stop something, do it outside the physics, as `sim/explore.py` stops its setpoint with
+  `mj_rayMesh`. Cast rays at the scan's geoms by id: `mj_ray` also hits the drone's own collision
+  sphere and CrazyFlow's hidden floor plane. The scan's geoms are static world geoms, so qpos and
+  the mocap bodies still line up for `Sim.render`'s copy. Two things that cost time here: MuJoCo's `usertexcoord` has v running *down* the image, the same as
+  glTF, so do not flip it (a flip samples the unused, black part of a Gibson texture). And Gibson
+  textures are 16k² JPEGs, 768 MB once decoded, so decode through PIL's `draft`.
+- **HM3D, and the EQA benchmarks on it (`sim/eqa.py`), are in habitat-sim's frame.** HM3D meshes
+  are z-up like ours, but benchmark poses are habitat's y-up. A habitat point `(x, y, z)` is
+  `(x, -z, y)` here, and a heading θ about habitat's +y is yaw θ + π/2 (the agent faces −z at
+  rest). Use `eqa.habitat_point` / `habitat_yaw`. Mirroring y instead puts benchmark paths
+  through walls, yet a "nearest floor below the path" check slightly favoured the mirror. Test a
+frame guess against walls, not floors. HM3D's
+  textures are Basis Universal, decoded by `sim/basis.py` (basisu's WebAssembly build under
+  `wasmtime`, since no Python package reads .basis). Its images come out **upside down** relative to
+  glTF: `scenes.debasis_glb` flips them, and without that a scan renders as confetti.
+  IndoorUAV's own `posture.json` rows are `[x, y, height, yaw°]`, which is habitat's (x, z, y), so
+  here they are `(x, -y, height)` with yaw `90° - yaw`. Its JSON is GBK-encoded, not UTF-8.
+- **Text in the explorer: `mjr_overlay` silently stops at 500 characters (`mjMAXOVERLAY`).**
+  Longer text goes through `Explorer._draw_panel` (`mjr_rectangle` + `mjr_text`). `mjr_text`'s
+  (x, y) are relative to the viewport of the *previous* `mjr_` call, not the window. MuJoCo's fonts
+  have ASCII only, so pass prompts through `explore.ascii_text`.
 
 ## Style
 
@@ -150,7 +175,9 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
 - **Heavy dependencies** → the `sim` extra or a new one, so the machine running the phone page stays
   light.
 - **Other manual control** (gamepad, keyboard) → `teleop/<name>/`, driving
-  `DroneController.set_control()` and `submit()` so the watchdog still protects it.
+  `DroneController.set_control()` and `submit()` so the watchdog still protects it. Manual control
+  of the *simulated* drone is different: it lives in `sim/` (`sim/explore.py`), because `teleop/`
+  may not import the simulator.
 
 ## What is set up in `.claude/`
 
@@ -196,3 +223,14 @@ uv sync --extra camera               # OpenCV, for drones-camera and drones-fpv 
 ```
 
 `uv sync` drops extras you do not name, so list every one you want each time.
+
+`drones-download-scenes` (sim extra) puts IndoorUAV scans in `scenes/`, git-ignored like `runs/`.
+Never commit them. `drones-explore-scene` flies the *simulated* drone around them from the keyboard
+in a GLFW window. It needs a desktop session, so leave it for the user to run, and to exercise it
+yourself use `Explorer(..., visible=False)` as `tests/test_explore.py` does. Use one `Explorer` per
+process: a second GLFW window, opened after the first was terminated, reads back black.
+`--benchmark hm-eqa|mt-hm3d|express-bench|a-eqa|indoor-uav` shows EQA questions or IndoorUAV's
+instructions. Code that picks scenes goes through `eqa.busiest` / `prepare` / `locate`, never
+`eqa.load` alone: IndoorUAV's prompts arrive per scene, so `load` returns only prepared scenes.
+Benchmark files are cached in `scenes/benchmarks/`, HM3D scenes in `scenes/hm3d/`, and the pinned Basis decoder in
+`~/.cache/drones/`.

@@ -103,6 +103,8 @@ uv run --extra sim drones-render-square runs/<name> --out square.gif --width 320
 - `chase` follows the drone; `top` looks straight down and is the one for judging drift.
 - The square renderer draws the reference in blue with the current target point marked, and the
   flown path as an orange trail.
+- `--scene scenes/<Name>.glb` films the square inside a scanned IndoorUAV house (scenery only);
+  fetch the default ten first with `uv run --extra sim drones-download-scenes`.
 - A GIF holds every frame in memory until written — keep GIFs small. MP4 uses the bundled ffmpeg.
 - Headless nodes render through EGL; the script sets `MUJOCO_GL=egl` unless you already did.
   `osmesa` does not work with this extra's PyOpenGL.
