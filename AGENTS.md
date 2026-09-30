@@ -141,6 +141,15 @@ frame guess against walls, not floors. HM3D's
   `DeckCamera` (a drone in an env) and `SceneView` (a dataset scan alone) only choose the model
   and the pose. `SceneView` poses are in the scan *file's* frame, the frame benchmark poses are in.
   That is not the shifted world of `scenes.load` + `attach`, where the open floor is the origin.
+- **torch and an EGL context in one process: keep triton out.** torch imports triton when it is
+  installed (on Linux it always is), and triton's bundled LLVM segfaults on import once Mesa has
+  made an EGL context, with no message, only exit code 139. The other order works.
+  `vlm/backend.py:_load` sets `sys.modules['triton'] = None` before importing torch, which torch
+  reads as triton not being installed. Anything else that loads torch beside the simulator's
+  renderer needs the same. Find such a crash with `python -X faulthandler`.
+- **transformers' image-text-to-text pipeline takes generation options only in
+  `generate_kwargs`.** Any other keyword goes to the processor and is dropped with a warning, so
+  `do_sample=False` passed directly still samples, as Gemma's own generation config says to.
 - **Text in the explorer: `mjr_overlay` silently stops at 500 characters (`mjMAXOVERLAY`).**
   Longer text goes through `Explorer._draw_panel` (`mjr_rectangle` + `mjr_text`). `mjr_text`'s
   (x, y) are relative to the viewport of the *previous* `mjr_` call, not the window. MuJoCo's fonts

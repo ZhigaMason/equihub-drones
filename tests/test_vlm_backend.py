@@ -1,6 +1,7 @@
 """The transformers backend against a stub pipeline: what it sends and what it returns. No model
 is loaded here; a real run is a manual step."""
 import sys
+import types
 
 import numpy as np
 import pytest
@@ -35,8 +36,9 @@ def test_it_sends_the_image_then_the_prompt_and_returns_the_reply_untouched():
     assert (image['type'], text) == ('image', {'type': 'text', 'text': 'fly'})
     assert image['image'].size == (6, 4)             # PIL's (width, height)
     assert image['image'].getpixel((0, 0)) == (200, 0, 0)
-    # Greedy, so a run is repeatable.
-    assert pipe.kwargs == {'max_new_tokens': 32, 'do_sample': False}
+    # Greedy, so a run is repeatable. It has to go in generate_kwargs: the pipeline hands any
+    # other keyword to the processor, which ignores it, and Gemma's own config samples.
+    assert pipe.kwargs == {'max_new_tokens': 32, 'generate_kwargs': {'do_sample': False}}
 
 
 def test_a_view_into_a_larger_frame_is_accepted():
@@ -64,3 +66,33 @@ def test_without_the_vlm_extra_it_says_how_to_install_it(monkeypatch):
     monkeypatch.setitem(sys.modules, 'torch', None)      # makes `import torch` raise ImportError
     with pytest.raises(SystemExit, match='--extra vlm'):
         TransformersBackend().generate('fly', frame())
+
+
+def test_loading_keeps_triton_out_and_asks_for_the_model_on_the_cpu(monkeypatch):
+    # torch imports triton if it is installed, and triton's own LLVM segfaults when it loads
+    # after Mesa has made an EGL context, which the simulator has by the first frame.
+    calls = []
+
+    def pipeline(task, **kwargs):
+        calls.append((task, kwargs, sys.modules.get('triton', 'absent')))
+        return StubPipe()
+
+    torch = types.ModuleType('torch')
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.float32, torch.bfloat16 = 'float32', 'bfloat16'
+    transformers = types.ModuleType('transformers')
+    transformers.pipeline = pipeline
+    monkeypatch.setitem(sys.modules, 'torch', torch)
+    monkeypatch.setitem(sys.modules, 'transformers', transformers)
+    monkeypatch.delitem(sys.modules, 'triton', raising=False)
+    monkeypatch.delenv('HF_TOKEN', raising=False)
+    try:
+        backend = TransformersBackend(model='some/model')
+        assert backend.generate('fly', frame()) == ' {"done": true} '
+    finally:
+        if sys.modules.get('triton', 'absent') is None:
+            del sys.modules['triton']
+    (task, kwargs, triton), = calls
+    assert triton is None                      # `import triton` now raises ImportError
+    assert task == 'image-text-to-text'
+    assert kwargs == {'model': 'some/model', 'device': 'cpu', 'dtype': 'float32'}

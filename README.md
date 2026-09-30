@@ -836,6 +836,27 @@ Other `--agent-arg`s: `model=` (any Hugging Face image-text-to-text checkpoint; 
 `google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`), `start_altitude=`
 (how high the start pose is taken to be, 1.0 m) and `max_new_tokens=`.
 
+### Measured here
+
+On this laptop (16 cores, no GPU) with `google/gemma-3n-E2B-it`, three chunks per mode in the
+Bowlus scan, with no question, so the task was to explore:
+
+| Action space | Seconds per model call | Valid at once | Valid after the retry | Failed |
+| --- | --- | --- | --- | --- |
+| `discrete` | 52 | 3 | 0 | 0 |
+| `continuous` | 201 | 3 | 0 | 0 |
+
+The first call of a run takes about 20 s more, to load the model. So one simulated second costs
+about a minute of discrete actions or over three minutes of continuous ones.
+
+The format holds: all six replies were valid JSON with exactly 16 actions. The flying does not yet
+follow the picture. In discrete mode all three replies were the same chunk, twelve `forward` then
+four `turn_right`, which is the prompt's own example with the turn reversed, for three different
+frames. In continuous mode all three were sixteen actions of zero, so the drone did not move. Three
+chunks in one scene are a smoke test, not an evaluation, but they say this 2B model copies the
+format more than it reads the image; a larger model or a prompt without a full example is the next
+thing to try.
+
 Limits to know about: the model sees one frame and remembers nothing, so it can circle; nothing
 collides with the scan, so it can fly through walls; and it flies only in the simulator. The pilot
 itself (`vlm/pilot.py`) imports neither the simulator nor a model, so that a real-drone adapter

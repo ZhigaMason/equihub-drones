@@ -10,6 +10,7 @@ needed to build an agent or to import this module.
 """
 import logging
 import os
+import sys
 from typing import Protocol
 
 import numpy as np
@@ -38,6 +39,12 @@ class TransformersBackend:
         self._pipe = pipe
 
     def _load(self):
+        # torch imports triton when it is installed, and on Linux it always is. triton brings its
+        # own LLVM, which segfaults on import once Mesa has made an EGL context (Mesa loads the
+        # system's LLVM) - and the simulator has one by the first frame. None makes `import
+        # triton` raise ImportError, which torch takes as triton not being installed. Only
+        # torch.compile needs it, and nothing here compiles. A triton already imported is left.
+        sys.modules.setdefault('triton', None)
         try:
             import torch
             from transformers import pipeline
@@ -60,6 +67,9 @@ class TransformersBackend:
         picture = Image.fromarray(np.ascontiguousarray(image))
         messages = [{'role': 'user', 'content': [{'type': 'image', 'image': picture},
                                                  {'type': 'text', 'text': prompt}]}]
-        # Greedy, so the same frame and question give the same chunk.
-        out = self._pipe(text=messages, max_new_tokens=self.max_new_tokens, do_sample=False)
+        # Greedy, so the same frame and question give the same chunk. In generate_kwargs, because
+        # the pipeline passes any other keyword to the processor, which drops it with a warning,
+        # and the model's own generation config samples.
+        out = self._pipe(text=messages, max_new_tokens=self.max_new_tokens,
+                         generate_kwargs={'do_sample': False})
         return out[0]['generated_text'][-1]['content']
