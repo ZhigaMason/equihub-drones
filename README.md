@@ -122,6 +122,8 @@ mission all fly through it.
   firmware's position and velocity loops; a `Command` would keep the teleop
   safety layer underneath it. `runs/`, `checkpoints/` and `wandb/` are
   git-ignored.
+- **A model that flies from images and language** → `src/drones/vlm/`. A new model is a new
+  backend (`generate(prompt, image) -> str`); the schema and the pilot stay as they are.
 - **Heavy dependencies** → the `sim` extra, or a new one, so the machine running
   the phone page does not need them.
 - **Other manual control** (gamepad, keyboard) → `teleop/<name>/`. Drive
@@ -784,6 +786,60 @@ What the stream needs from the computer watching it:
 - **One client at a time.** The ESP serves a single camera connection, so run
   only one of `drones-camera`, `drones-fpv` or Bitcraze's viewer. A second one
   reports that it cannot reach the deck.
+
+## A vision-language model as the pilot
+
+`drones.vlm` lets a vision-language model fly the simulated drone through a scanned scene from a
+question and what the camera sees:
+
+```bash
+uv sync --extra sim --extra camera --extra vlm
+uv run --extra sim --extra vlm drones-render-agent --benchmark hm-eqa --question 1 \
+    --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16
+```
+
+Once per simulated second the model is shown the current frame, the question, its altitude and the
+time flown. It replies with JSON: 16 actions, a completion flag and an answer. The reply is
+validated with pydantic before any of it is flown, and the 16 actions are then played back at
+16 Hz. The simulator waits for the model, so this works however slow the model is.
+
+There are two action spaces, chosen with `--agent-arg action_space=`:
+
+```json
+{"actions": [{"forward": 0.6, "yaw": 0.0, "altitude": 1.2}, "... 16 in all"],
+ "done": false, "answer": null}
+```
+
+`continuous` (the default): `forward` and `yaw` from -1 to 1, scaled by `MAX_MANUAL_SPEED` and
+`MAX_YAW_RATE`, positive yaw to the left; `altitude` an absolute target in metres, or `null` to
+stay level. This is a `control.mixer.Command`, the same thing the phone page sends.
+
+```json
+{"actions": ["forward", "forward", "turn_left", "... 16 in all"], "done": false, "answer": null}
+```
+
+`discrete`: each action is one of `forward`, `backward`, `turn_left`, `turn_right`, `rise`,
+`descend`, `hover`, a full-scale Command for one step. At the default limits one action is 2.5 cm
+or 5.6°, so a whole chunk is at most 0.4 m or 90°. The limits are the ones in `.env`
+([Configuration](#configuration)), so tuning them changes how far the simulated drone moves too.
+
+When the model sets `done`, the episode ends and `answer` is printed beside the benchmark's own.
+
+What happens to a bad reply:
+
+- A reply that is not valid JSON, has the wrong number of actions, a value out of range or an
+  unknown field is rejected whole and asked for again once, with the error.
+- After a second bad reply the drone hovers for that second.
+- Three such seconds in a row end the episode.
+
+Other `--agent-arg`s: `model=` (any Hugging Face image-text-to-text checkpoint; the default,
+`google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`), `start_altitude=`
+(how high the start pose is taken to be, 1.0 m) and `max_new_tokens=`.
+
+Limits to know about: the model sees one frame and remembers nothing, so it can circle; nothing
+collides with the scan, so it can fly through walls; and it flies only in the simulator. The pilot
+itself (`vlm/pilot.py`) imports neither the simulator nor a model, so that a real-drone adapter
+can be added under it.
 
 ## Development
 

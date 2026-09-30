@@ -55,6 +55,7 @@ Dependencies only ever point downwards. `tests/test_architecture.py` fails if th
 | --- | --- | --- |
 | `control/` | stdlib, `drones.config` | The flight control law. No cflib, no web, no JAX. |
 | `policy/` | numpy | Runs on the flying laptop, which has neither JAX nor the simulator. |
+| `vlm/` | pydantic, numpy, `drones.control` | The VLM pilot. torch, transformers and PIL (the `vlm` extra) are imported inside functions only. `vlm/agent.py` alone imports `sim/`. |
 | `crazyflie/`, `missions/` | + cflib, numpy | Everything that talks to real hardware. `crazyflie/camera.py` also uses OpenCV (the `camera` extra), imported inside functions only. |
 | `sim/`, `rl/` | + JAX, flax, optax, CrazyFlow | The `sim` extra. Never imported by the above. |
 
@@ -185,6 +186,14 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   (`sim/agents.py`). Run it with `agents.episode`, or film it with `drones-render-agent --agent
   package.module:factory`. Do not make agents subclass anything, and keep the agent code itself
   out of this repo's `sim/` unless it is a baseline.
+- **A VLM that flies** → `src/drones/vlm/`. The schema a model must reply in is
+  `vlm/actions.py`, and it is the contract: change the fields or `CHUNK` there, and the prompt's
+  example (`vlm/prompt.py:example`) is tested against it. Another model or a server is a new
+  `Backend` (`generate(prompt, image) -> str`), not a change to `Pilot`. A real-drone adapter
+  would call `Pilot.step` and pass each Command to `DroneController.set_control`; none exists yet,
+  and writing one does not make it something an agent may run. The size of one action comes from
+  `drones.config`, so a local `.env` changes how far the simulated drone moves per action and what
+  the prompt tells the model; the tests run at the shipped defaults.
 - **A new learning algorithm** → `src/drones/rl/`. Decide deliberately what the policy outputs:
   attitude commands replace the firmware's position and velocity loops; emitting a
   `control.mixer.Command` instead keeps the teleop safety layer underneath.
@@ -237,6 +246,7 @@ cover the two workflows with real sequencing to get right.
 uv sync --extra sim                  # CPU
 uv sync --extra sim --extra gpu      # adds jax[cuda12]
 uv sync --extra camera               # OpenCV, for drones-camera and drones-fpv (AI-deck video)
+uv sync --extra sim --extra vlm      # torch + transformers, for the VLM pilot's local model
 ```
 
 `uv sync` drops extras you do not name, so list every one you want each time. That includes the
@@ -256,3 +266,8 @@ Benchmark files are cached in `scenes/benchmarks/`, HM3D scenes in `scenes/hm3d/
 `drones-render-agent` renders offscreen (EGL) and touches no hardware, so you may run it; it
 downloads a question's scene if missing. Tests must not depend on `scenes/`:
 `tests/test_agents.py` swaps `scene_view.load_scene` for a synthetic box and runs `main()` on it.
+
+The VLM pilot has no entry point of its own: it is `drones-render-agent --agent
+drones.vlm.agent:make --agent-arg action_space=discrete --fps 16`. One step is 1/16 s, so 16 fps is
+real time. A run loads a local model (`google/gemma-3n-E2B-it`, gated) and is slow without a GPU;
+the tests script the replies instead and load nothing.

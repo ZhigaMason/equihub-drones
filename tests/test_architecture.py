@@ -42,3 +42,18 @@ def test_config_looks_for_env_at_the_repository_root():
     # .env, so the path comes from the package's location, not the cwd.
     from drones import config
     assert (config._REPO_ENV.parent / 'pyproject.toml').is_file()
+
+
+def test_vlm_pilot_needs_neither_the_simulator_nor_a_model():
+    # The pilot is meant to sit on the real drone later, and importing it must not cost a torch
+    # import. Only drones.vlm.agent, the simulator adapter, may reach for drones.sim.
+    code = (
+        'import sys\n'
+        'import drones.vlm.actions, drones.vlm.prompt, drones.vlm.pilot, drones.vlm.backend\n'
+        'bad = sorted(m for m in sys.modules if m.split(".")[0] in '
+        '("torch", "transformers", "PIL", "jax", "crazyflow", "mujoco", "cflib"))\n'
+        'print(bad)\n'
+        'sys.exit(1 if bad else 0)\n'
+    )
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+    assert result.returncode == 0, f'drones.vlm pulled in {result.stdout.strip()} {result.stderr}'
