@@ -8,6 +8,7 @@ An agent is anything with these two methods, and optionally an `answer`:
         def act(self, observation):            # an Observation: image, pose, step, question
             return Pose(...)                   # where to be next, or None to stop
         answer = None                          # read after the episode, for EQA benchmarks
+        caption = []                           # lines for drones-render-agent to show, if any
 
 `drones-render-agent --agent package.module:factory` loads one: `factory(**kwargs)` returns it,
 with kwargs from `--agent-arg key=value`. It needs no base class, and nothing here imports it.
@@ -119,3 +120,16 @@ def episode(view, agent, start, question=None, max_steps=MAX_STEPS):
             return
         pose = Pose(np.asarray(pose.pos, float), float(pose.yaw), float(pose.pitch),
                     float(pose.roll))
+
+
+def decided(observations):
+    """The observations of an `episode`, each yielded once the agent has acted on it rather than
+    before. For a film that captions a frame with what the agent made of it: the last frame, on
+    which it stopped, then shows why."""
+    pending = None
+    for observation in observations:
+        if pending is not None:
+            yield pending
+        pending = observation
+    if pending is not None:
+        yield pending

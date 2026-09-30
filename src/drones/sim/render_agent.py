@@ -3,16 +3,20 @@
     uv run --extra sim drones-render-agent --benchmark indoor-uav --question 3 --agent follow-path
     uv run --extra sim drones-render-agent --benchmark hm-eqa --question 1          # look-around
     uv run --extra sim drones-render-agent --scene Bowlus --agent mypkg.agents:make --agent-arg k=v
+    uv run --extra sim drones-render-agent --scene Bowlus --ask 'Find the sofa.' --agent ...
 
 Left, the drone from behind (CrazyFlow's model of it, in the scan). Right, what the agent sees: the
 AI-deck's view through the calibrated lens (--intrinsics, recordings/intrinsics.json by default),
 or an ideal pinhole (--fov). That image is exactly the one the agent is given, at its own size; the
-chase view matches its height. Under both, the step, the pose and the question or instruction.
+chase view matches its height. Under both, the step, the pose and the question or instruction,
+and then whatever the agent has to say about that frame: the lines of its `caption`, if it has
+one (the VLM pilot's is the chunk of actions it is flying, with its completion flag). A frame is
+captioned once the agent has acted on it, so the last frame shows why it stopped.
 
 The agent is a built-in (look-around, follow-path) or any `package.module:factory` that returns an
 object with reset() and act(); see drones.sim.agents. With --benchmark, it starts from the
 question's start pose (eqa.start_pose) and its scene is downloaded if needed. With --scene, it
-starts over the scan's most open floor.
+starts over the scan's most open floor, and --ask gives it a question of your own.
 
 Writes runs/agent-renders/<name>.mp4 unless --out says otherwise; the extension picks the format.
 Headless Linux renders through EGL. Set MUJOCO_GL to use another backend, such as glfw on a desktop.
@@ -26,7 +30,8 @@ from pathlib import Path
 
 BENCHMARKS = ('hm-eqa', 'mt-hm3d', 'express-bench', 'a-eqa', 'indoor-uav')
 OUT_DIR = Path('runs/agent-renders')
-CAPTION_LINES = 3
+CAPTION_LINES = 3     # the step and pose, then two for the question
+AGENT_LINES = 6       # under them, for an agent with a `caption`
 LABEL_RGB = (255, 255, 255)
 CAPTION_BG = (24, 24, 24)
 
@@ -63,15 +68,16 @@ def pick_question(benchmark, number):
     return scene, question
 
 
-def compose(chase, fpv, lines, scale, font):
-    """[chase | fpv] over a caption, each pixel `scale` times, padded to even sizes for mp4."""
+def compose(chase, fpv, lines, scale, font, rows=CAPTION_LINES):
+    """[chase | fpv] over a caption of `rows` lines, each pixel `scale` times, padded to even
+    sizes for mp4."""
     import numpy as np
     from PIL import Image, ImageDraw
 
     top = np.concatenate([chase, fpv], axis=1)
     top = top.repeat(scale, axis=0).repeat(scale, axis=1)
     line_height = font.size + 4 * scale
-    height = top.shape[0] + CAPTION_LINES * line_height + 4 * scale
+    height = top.shape[0] + rows * line_height + 4 * scale
     width = top.shape[1]
     canvas = Image.new('RGB', (width + width % 2, height + height % 2), CAPTION_BG)
     canvas.paste(Image.fromarray(top), (0, 0))
@@ -79,19 +85,25 @@ def compose(chase, fpv, lines, scale, font):
     pad = 3 * scale
     draw.text((pad, pad), 'chase', fill=LABEL_RGB, font=font)
     draw.text((chase.shape[1] * scale + pad, pad), 'agent camera', fill=LABEL_RGB, font=font)
-    for i, line in enumerate(lines[:CAPTION_LINES]):
+    for i, line in enumerate(lines[:rows]):
         draw.text((pad, top.shape[0] + 2 * scale + i * line_height), line, fill=LABEL_RGB,
                   font=font)
     return np.asarray(canvas)
 
 
-def caption(observation, text, width_chars):
+def caption(observation, text, width_chars, agent_lines=None):
+    """The caption's lines: the step and pose, the question `text` in two (blank if shorter, so
+    what follows never moves), then `agent_lines` wrapped into AGENT_LINES, if there are any."""
     p = observation.pose
     x, y, z = p.pos
     head = (f'step {observation.step}   pos ({x:.2f}, {y:.2f}, {z:.2f}) m   '
             f'yaw {math.degrees(p.yaw):.0f}  pitch {math.degrees(p.pitch):.0f}  '
             f'roll {math.degrees(p.roll):.0f} deg')
-    return [head] + textwrap.wrap(text, width_chars)[:CAPTION_LINES - 1]
+    lines = [head] + (textwrap.wrap(text, width_chars) + ['', ''])[:CAPTION_LINES - 1]
+    if agent_lines is None:
+        return lines
+    wrapped = [part for line in agent_lines for part in textwrap.wrap(str(line), width_chars)]
+    return lines + (wrapped + [''] * AGENT_LINES)[:AGENT_LINES]
 
 
 def main(argv=None):
@@ -103,6 +115,8 @@ def main(argv=None):
     parser.add_argument('--question', type=int, default=1,
                         help="with --benchmark, the question's number in the benchmark's own "
                              'order, from 1 (default: 1)')
+    parser.add_argument('--ask', metavar='TEXT',
+                        help='with --scene, a question or instruction of your own for the agent')
     parser.add_argument('--agent', default='look-around',
                         help='look-around, follow-path, or package.module:factory '
                              '(default: look-around)')
@@ -136,6 +150,8 @@ def main(argv=None):
         parser.error('--width and --height go together')
     if args.fov is not None and args.intrinsics is not None:
         parser.error('--fov and --intrinsics are alternatives')
+    if args.ask is not None and args.benchmark is not None:
+        parser.error('--ask goes with --scene; a benchmark question brings its own text')
     if args.fps <= 0 or args.scale < 1 or (args.steps is not None and args.steps < 0):
         parser.error('--fps and --scale must be positive, --steps not negative')
     agent_kwargs = parse_agent_args(parser, args.agent_arg)
@@ -183,7 +199,10 @@ def main(argv=None):
         name = f'{args.benchmark}-{args.question}'
         text = question.text
     else:
-        scene, name, text = args.scene, Path(args.scene).stem, ''
+        scene, name, text = args.scene, Path(args.scene).stem, args.ask or ''
+        if args.ask:
+            # No start, path or answer: the agent is given only the words.
+            question = eqa.Question('ask', 0, name, args.ask, '', 'ask')
     name += f'-{args.agent.replace(":", ".")}'
     out = args.out or OUT_DIR / f'{name}.mp4'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -195,7 +214,7 @@ def main(argv=None):
     except FileNotFoundError as exc:
         sys.exit(str(exc))
     with view:
-        if question is not None:
+        if args.benchmark is not None:
             pos, yaw = eqa.start_pose(question, view.scene.origin, eye_height)
         else:
             pos, yaw = view.scene.origin + [0.0, 0.0, eye_height], 0.0
@@ -206,6 +225,9 @@ def main(argv=None):
         font = ImageFont.load_default(size=11 * args.scale)
         width_chars = int((chase_width + intrinsics.width) * args.scale / (0.6 * font.size))
         max_steps = agents.MAX_STEPS if args.steps is None else args.steps
+        # Decided before the first frame: every frame of a film is the same size.
+        captioned = getattr(agent, 'caption', None) is not None
+        rows = CAPTION_LINES + (AGENT_LINES if captioned else 0)
 
         frames = 0
         if out.suffix.lower() == '.gif':
@@ -214,11 +236,14 @@ def main(argv=None):
             # Not rescaled to a multiple of 16: the agent's pixels stay the lens's.
             writer = imageio.get_writer(out, fps=args.fps, macro_block_size=2)
         with writer:
-            for observation in agents.episode(view, agent, start, question, max_steps):
+            episode = agents.episode(view, agent, start, question, max_steps)
+            # Each frame once the agent has acted on it, so its caption is about that frame.
+            for observation in agents.decided(episode):
                 side = chase.render(observation.pose.pos, observation.pose.rotation)
+                said = agent.caption if captioned else None
                 writer.append_data(compose(side, observation.image,
-                                           caption(observation, text, width_chars),
-                                           args.scale, font))
+                                           caption(observation, text, width_chars, said),
+                                           args.scale, font, rows))
                 frames += 1
 
     print(f'Wrote {out}: {frames} frames at {args.fps:g} fps, agent {args.agent}')
@@ -227,7 +252,8 @@ def main(argv=None):
         print(f'  question: {question.text}')
         if answer is not None:
             print(f'  agent answered: {answer}')
-        print(f'  {question.reveal}: {question.answer}')
+        if question.answer:
+            print(f'  {question.reveal}: {question.answer}')
 
 
 if __name__ == '__main__':

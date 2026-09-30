@@ -82,6 +82,47 @@ def test_agents_load_by_name_or_import_path():
         agents.make_agent('nonsense')
 
 
+def test_decided_yields_each_frame_once_the_agent_has_acted_on_it():
+    # A film captions a frame with what the agent made of it, the last frame included.
+    class Counting:
+        def reset(self, question, pose):
+            self.acts = 0
+
+        def act(self, observation):
+            self.acts += 1
+            return observation.pose if self.acts < 3 else None
+
+    agent = Counting()
+    start = agents.Pose(np.zeros(3))
+    seen = [(o.step, agent.acts)
+            for o in agents.decided(agents.episode(FakeView(), agent, start))]
+    assert seen == [(0, 1), (1, 2), (2, 3)]
+    assert list(agents.decided(iter(()))) == []
+
+
+def test_caption_keeps_the_question_to_two_lines_and_puts_the_agents_lines_under_it():
+    from drones.sim import render_agent
+
+    observation = agents.Observation(None, agents.Pose(np.zeros(3)), 4, None)
+    lines = render_agent.caption(observation, 'Find the sofa.', 40,
+                                 ['chunk 1', 'forward ' * 40])
+    assert lines[0].startswith('step 4')
+    assert lines[1:4] == ['Find the sofa.', '', 'chunk 1']
+    assert len(lines) == render_agent.CAPTION_LINES + render_agent.AGENT_LINES
+    assert all(len(line) <= 40 for line in lines[1:])
+    assert lines[4] == ('forward ' * 5).strip()
+    # Without agent lines the caption is the three it always was.
+    assert len(render_agent.caption(observation, '', 40)) == render_agent.CAPTION_LINES
+
+
+def test_ask_goes_with_a_scene_not_a_benchmark(capsys):
+    from drones.sim import render_agent
+
+    with pytest.raises(SystemExit):
+        render_agent.main(['--benchmark', 'hm-eqa', '--ask', 'Find the sofa.'])
+    assert '--ask goes with --scene' in capsys.readouterr().err
+
+
 CLI_ON_A_BOX = textwrap.dedent('''
     import json, sys
     import numpy as np

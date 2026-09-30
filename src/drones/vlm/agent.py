@@ -31,7 +31,7 @@ import numpy as np
 from drones import config
 from drones.control.mixer import clamp
 from drones.sim.agents import Pose
-from drones.vlm.actions import STEP
+from drones.vlm.actions import CHUNK, STEP, ContinuousAction
 from drones.vlm.backend import DEFAULT_MODEL, TransformersBackend
 from drones.vlm.pilot import Pilot
 
@@ -51,15 +51,50 @@ def integrate(pose, altitude, command):
     return Pose(np.asarray(pose.pos, float) + step, yaw)
 
 
+def _word(action):
+    """One action as a word of a caption: a move's name, or forward/yaw/altitude."""
+    if not isinstance(action, ContinuousAction):
+        return action
+    altitude = '-' if action.altitude is None else f'{action.altitude:.2f}'
+    return f'{action.forward:+.2f}/{action.yaw:+.2f}/{altitude}'
+
+
+def describe(pilot, over=False):
+    """Caption lines for what `pilot` is doing: the chunk it is flying, whole, with the action
+    of this step in brackets, the completion flag and the answer. `over` says the episode has
+    ended. [] before the first chunk."""
+    count = sum(pilot.stats.values())
+    if not count:
+        return []
+    lines = [] if pilot.question else ['no question: explore']
+    head = f'chunk {count} at {pilot.asked_at:.0f} s   '
+    chunk = pilot.chunk
+    if chunk is None:
+        error = ' '.join(str(pilot.error).split())[:ERROR_SHOWN]
+        lines.append(f'{head}FAILED, {"stopping" if over else "hovering"}: {error}')
+        return lines if over else lines + [f'hover x{CHUNK}']
+    answer = '-' if pilot.answer is None else repr(pilot.answer)
+    head += f'done: {str(chunk.done).lower()}   answer: {answer}'
+    if chunk.done:          # its actions, if it has any, are not flown
+        return lines + [head]
+    if pilot.space == 'continuous':
+        head += '   (forward/yaw/altitude)'
+    words = [_word(action) for action in chunk.actions]
+    words[pilot.played - 1] = f'[{words[pilot.played - 1]}]'
+    return lines + [head, ' '.join(words)]
+
+
 class VLMAgent:
     """Flies `pilot`'s Commands in a scanned scene, from a start `start_altitude` m up."""
 
     def __init__(self, pilot, start_altitude=1.0):
         self.pilot, self.start_altitude = pilot, float(start_altitude)
         self._floor = 0.0
+        self._over = False
 
     def reset(self, question, pose):
         self._floor = float(pose.pos[2]) - self.start_altitude
+        self._over = False
         # An eqa.Question, or None when the scene was picked without a benchmark.
         self.pilot.reset(getattr(question, 'text', None), getattr(question, 'choices', ()))
 
@@ -72,6 +107,7 @@ class VLMAgent:
         if pilot.stats != stats:
             self._report(observation.step, stats, pilot.seconds - seconds, command is None)
         if command is None:
+            self._over = True
             return None
         return integrate(pose, altitude, command)
 
@@ -88,6 +124,11 @@ class VLMAgent:
                 outcome += f', done, answer {pilot.answer!r}'
         print(f'vlm: chunk {sum(pilot.stats.values())} at {step * STEP:.0f} s: {outcome} '
               f'({seconds:.0f} s)', file=sys.stderr, flush=True)
+
+    @property
+    def caption(self):
+        """Lines for a film to show under the frame the agent last acted on."""
+        return describe(self.pilot, self._over)
 
     @property
     def answer(self):

@@ -43,6 +43,9 @@ class Pilot:
         self.queries = 0
         self.seconds = 0.0      # spent in the backend
         self.stats = {'first': 0, 'retry': 0, 'failed': 0}
+        self.chunk = None       # the chunk being flown; None before the first and after a failure
+        self.played = 0         # how many of its actions have been handed out
+        self.asked_at = 0.0     # s into the episode when it was asked for
         self._actions = deque()
         self._steps = 0
         self._failures = 0
@@ -57,6 +60,7 @@ class Pilot:
             self._over = True
             return None
         self._steps += 1
+        self.played += 1
         return to_command(self._actions.popleft(), altitude)
 
     def _plan(self, image, altitude):
@@ -64,6 +68,7 @@ class Pilot:
         prompt = build_prompt(self.space, self.question, self.choices, altitude,
                               self._steps * STEP)
         chunk = self._ask(prompt, image)
+        self.chunk, self.played, self.asked_at = chunk, 0, self._steps * STEP
         if chunk is None:
             self.stats['failed'] += 1
             self._failures += 1

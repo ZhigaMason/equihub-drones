@@ -160,3 +160,21 @@ def test_step_before_reset_explores():
     backend = FakeBackend(FORWARD)
     assert Pilot(backend, 'discrete').step(0, 1.0) == Command(forward=1.0)
     assert 'explore' in backend.calls[0][0]
+
+
+def test_the_chunk_being_flown_and_the_place_in_it_are_kept():
+    # What a film or a log shows beside each frame.
+    pilot = started(FakeBackend(FORWARD, BAD, BAD, DONE))
+    assert (pilot.chunk, pilot.played) == (None, 0)
+    pilot.step(0, 1.0)
+    assert pilot.chunk.actions == ['forward'] * CHUNK
+    assert (pilot.played, pilot.asked_at) == (1, 0.0)
+    fly(pilot, CHUNK - 1)
+    assert pilot.played == CHUNK
+    pilot.step(CHUNK, 1.0)                   # a failed chunk: hover, and no chunk to show
+    assert (pilot.chunk, pilot.played, pilot.asked_at) == (None, 1, 1.0)
+    fly(pilot, CHUNK - 1)
+    assert pilot.step(2 * CHUNK, 1.0) is None
+    assert pilot.chunk.done and (pilot.played, pilot.asked_at) == (0, 2.0)
+    pilot.reset()
+    assert (pilot.chunk, pilot.played, pilot.asked_at) == (None, 0, 0.0)

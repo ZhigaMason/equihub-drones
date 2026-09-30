@@ -197,7 +197,11 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   agent is anything with `reset(question, pose)` and `act(observation) -> Pose | None`
   (`sim/agents.py`). Run it with `agents.episode`, or film it with `drones-render-agent --agent
   package.module:factory`. Do not make agents subclass anything, and keep the agent code itself
-  out of this repo's `sim/` unless it is a baseline.
+  out of this repo's `sim/` unless it is a baseline. An agent may also have `answer` and
+  `caption` (a list of lines the film shows under the question); both are read by attribute, so
+  `sim/` still imports no agent. The film writes each frame through `agents.decided`, after the
+  agent has acted on it: a caption read any earlier describes the previous frame, and the frame
+  the agent stopped on would never show why.
 - **A VLM that flies** → `src/drones/vlm/`. The schema a model must reply in is
   `vlm/actions.py`, and it is the contract: change the fields or `CHUNK` there, and the prompt's
   example (`vlm/prompt.py:example`) is tested against it. Another model or a server is a new
@@ -285,4 +289,7 @@ so 16 fps is real time. A run loads a local model (`google/gemma-3n-E2B-it`, gat
 without a GPU: about a minute per model call, one call per 16 steps, so always pass `--steps` (the
 default 500 is half an hour or more). The tests script the replies instead and load nothing. The
 agent assumes its start is `start_altitude` (1.0 m) above the floor, which is wrong for
-`indoor-uav` and after `--eye-height`; pass the real height.
+`indoor-uav` and after `--eye-height`; pass the real height. With `--scene`, `--ask TEXT` gives
+the agent a question of your own. The film's panel under the question holds `AGENT_LINES` lines
+(`sim/render_agent.py`); `tests/test_vlm_agent.py` checks the pilot's longest caption fits it, so
+change the two together.

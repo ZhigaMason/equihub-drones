@@ -2,6 +2,10 @@
 a chunk moves the drone, and that the question reaches the model."""
 import json
 import math
+import os
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
 import pytest
@@ -172,3 +176,137 @@ def test_giving_up_is_reported_with_the_error(capsys):
     lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith('vlm:')]
     assert len(lines) == 3
     assert 'stopping' in lines[-1] and 'no JSON object' in lines[-1]
+
+
+def captions(*replies, space='discrete', question=None):
+    """The agent's caption once it has acted on each frame, as a film shows it."""
+    agent = vlm_agent.make(action_space=space, backend=FakeBackend(*replies))
+    start = agents.Pose(np.array([1.0, 2.0, 1.5]))
+    assert agent.caption == []
+    return [agent.caption for _ in agents.decided(agents.episode(FakeView(), agent, start,
+                                                                 question))]
+
+
+def test_the_caption_shows_the_whole_chunk_and_marks_the_action_being_flown():
+    shown = captions(moves('forward', 12)[:-2] + ', "turn_left", "turn_left", "turn_left", '
+                     '"turn_left"]}', DONE)
+    assert len(shown) == CHUNK + 1
+    assert shown[0] == ['no question: explore',
+                        'chunk 1 at 0 s   done: false   answer: -',
+                        '[forward]' + ' forward' * 11 + ' turn_left' * 4]
+    assert shown[5][2] == 'forward ' * 5 + '[forward]' + ' forward' * 6 + ' turn_left' * 4
+    assert shown[15][2].endswith('turn_left [turn_left]')
+    # The chunk that ended the episode is shown on the last frame, the one it was asked on.
+    assert shown[16] == ['no question: explore', "chunk 2 at 1 s   done: true   answer: 'B'"]
+
+
+def test_a_question_is_left_to_the_film_to_show():
+    q = eqa.Question('hm-eqa', 1, 'scene', 'What colour is the sofa?', 'B', 'object')
+    shown = captions(moves('hover'), DONE, question=q)
+    assert shown[0][0] == 'chunk 1 at 0 s   done: false   answer: -'
+    assert not any('no question' in line for lines in shown for line in lines)
+
+
+def test_continuous_actions_are_captioned_as_forward_yaw_altitude():
+    actions = ([{'forward': 0.5, 'yaw': -0.25, 'altitude': 1.4}]
+               + [{'forward': 0.0, 'yaw': 1.0, 'altitude': None}] * (CHUNK - 1))
+    shown = captions(json.dumps({'actions': actions}), DONE, space='continuous')
+    assert shown[0][1] == 'chunk 1 at 0 s   done: false   answer: -   (forward/yaw/altitude)'
+    assert shown[0][2] == '[+0.50/-0.25/1.40]' + ' +0.00/+1.00/-' * (CHUNK - 1)
+    assert shown[1][2].startswith('+0.50/-0.25/1.40 [+0.00/+1.00/-] +0.00')
+
+
+def test_a_failed_chunk_is_captioned_with_its_error():
+    shown = captions(*['nonsense'] * 6)
+    assert shown[0][1:] == ['chunk 1 at 0 s   FAILED, hovering: the reply holds no JSON object',
+                            'hover x16']
+    assert shown[CHUNK][1].startswith('chunk 2 at 1 s   FAILED, hovering')
+    assert shown[-1][1:] == ['chunk 3 at 2 s   FAILED, stopping: the reply holds no JSON object']
+
+
+FILM_ON_A_BOX = textwrap.dedent('''
+    import json, sys
+    import numpy as np
+    from drones.sim import render_agent, scene_view, scenes
+    from drones.vlm import agent as vlm_agent
+
+    lo, hi = np.array([-2.0, -2.0, 0.0]), np.array([2.0, 2.0, 2.5])
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
+                        for z in (lo[2], hi[2])])
+    faces = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+             [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]]
+    texture = np.array([[[200, 60, 60], [60, 200, 60]], [[60, 60, 200], [200, 200, 60]]],
+                       np.uint8)
+    uv = np.array([[0.25 + 0.5 * (i % 2), 0.25 + 0.5 * (i // 4 % 2)] for i in range(8)],
+                  np.float32)
+    part = scenes.Part(corners.astype(np.float32), np.array(faces, np.int32), uv, texture)
+    scene = scenes.Scene('box', [part], np.array([3.0, -1.0, 0.2]), 2.0)
+    scene_view.load_scene = lambda name, dest=None: scene
+
+    class Scripted:
+        replies = [json.dumps({'actions': ['forward'] * 16}),
+                   json.dumps({'done': True, 'answer': 'B'})]
+
+        def generate(self, prompt, image):
+            assert 'Find the sofa.' in prompt, prompt
+            return self.replies.pop(0)
+
+    def make():
+        return vlm_agent.make(action_space='discrete', backend=Scripted())
+
+    render_agent.main(['--scene', 'box', '--fov', '70', '--width', '80', '--height', '60',
+                       '--agent', '__main__:make', '--ask', 'Find the sofa.', '--scale', '1',
+                       '--out', sys.argv[1]])
+''')
+
+
+def gl_env():
+    env = dict(os.environ)
+    env.setdefault('MUJOCO_GL', 'egl')
+    return env
+
+
+def can_render():
+    code = 'import mujoco; c = mujoco.GLContext(16, 16); c.make_current(); c.free()'
+    return subprocess.run([sys.executable, '-c', code], env=gl_env(),
+                          capture_output=True).returncode == 0
+
+
+# Starting the film's interpreter forks, which Python warns about once JAX has threads.
+@pytest.mark.filterwarnings(r'ignore:os\.fork\(\) was called:RuntimeWarning')
+@pytest.mark.skipif(not can_render(), reason='no offscreen OpenGL (MUJOCO_GL=egl)')
+def test_the_film_asks_the_question_and_captions_every_frame_with_the_chunk(tmp_path):
+    import imageio.v2 as imageio
+
+    from drones.sim import render_agent
+
+    out = tmp_path / 'vlm.mp4'
+    done = subprocess.run([sys.executable, '-c', FILM_ON_A_BOX, str(out)], env=gl_env(),
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert f'Wrote {out}: {CHUNK + 1} frames' in done.stdout
+    assert 'question: Find the sofa.' in done.stdout
+    assert 'agent answered: B' in done.stdout
+    frames = imageio.mimread(out, memtest=False)
+    assert len(frames) == CHUNK + 1
+    # 60 rows of picture, then 15-row lines: the step, two for the question, the agent's panel.
+    rows = render_agent.CAPTION_LINES + render_agent.AGENT_LINES
+    height = 60 + rows * 15 + 4
+    assert frames[0].shape[:2] == (height + height % 2, 160)     # mp4 wants even sizes
+    panel = slice(60 + render_agent.CAPTION_LINES * 15, None)
+    assert frames[0][panel].max() > 150, 'nothing is written in the agent panel'
+    # The last frame shows the chunk that ended the episode, not the one before it.
+    change = np.abs(frames[-1][panel].astype(int) - frames[0][panel].astype(int))
+    assert change.max() > 100
+
+
+def test_the_longest_caption_fits_the_films_panel():
+    # The deck's lens at the default scale gives the film 98 characters a line. Every action at
+    # its longest, and no question, is the most the panel has to hold.
+    from drones.sim import render_agent
+
+    actions = [{'forward': -0.25, 'yaw': -0.75, 'altitude': 1.25}] * CHUNK
+    shown = captions(json.dumps({'actions': actions}), DONE, space='continuous')[0]
+    observation = agents.Observation(None, agents.Pose(np.zeros(3)), 0, None)
+    lines = render_agent.caption(observation, '', 98, shown)
+    assert sum(line.count('1.25') for line in lines) == CHUNK, 'actions are cut off'

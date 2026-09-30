@@ -830,6 +830,31 @@ or 5.6°, so a whole chunk is at most 0.4 m or 90°. The limits are the ones in 
 
 When the model sets `done`, the episode ends and `answer` is printed beside the benchmark's own.
 
+The film shows what the model was asked and what it said. Under the two pictures are the step and
+pose, the question, and then the chunk being flown:
+
+```
+step 5   pos (-1.21, -1.27, 1.11) m   yaw 0  pitch 0  roll 0 deg
+What colour is the sofa in the living room, and which room is it in?
+
+chunk 1 at 0 s   done: false   answer: -   (forward/yaw/altitude)
++0.80/+0.00/1.40 +0.80/+0.00/1.40 +0.80/+0.00/1.40 +0.80/+0.00/1.40 +0.80/+0.00/1.40
+[+0.80/+0.00/1.40] +0.80/+0.00/1.40 +0.80/+0.00/1.40 +0.80/+0.00/1.40 +0.80/+0.00/1.40
++0.25/-1.00/- +0.25/-1.00/- +0.25/-1.00/- +0.25/-1.00/- +0.25/-1.00/- +0.25/-1.00/-
+```
+
+All 16 actions are there, with the one flown at that frame in brackets; a discrete chunk is its
+16 words. The last frame shows the chunk that ended the episode, `done: true` with the answer. A
+chunk that failed validation reads `FAILED, hovering:` and the error.
+
+A benchmark brings its own question. With `--scene` there is none and the model is told to
+explore, unless you give it one:
+
+```bash
+uv run --extra sim --extra vlm drones-render-agent --scene Bowlus --ask 'Find the sofa.' \
+    --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48
+```
+
 What happens to a bad reply:
 
 - A reply that is not valid JSON, has the wrong number of actions, a value out of range or an
