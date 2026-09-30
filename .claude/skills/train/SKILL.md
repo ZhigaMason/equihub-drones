@@ -100,7 +100,9 @@ uv run --extra sim drones-render-hover  runs/<name> --open-loop        # the zer
 uv run --extra sim drones-render-square runs/<name> --out square.gif --width 320 --height 240
 ```
 
-- `chase` follows the drone; `top` looks straight down and is the one for judging drift.
+- `chase` follows the drone; `top` looks straight down and is the one for judging drift; `deck` is
+  the AI-deck's own view through `recordings/intrinsics.json` (`--intrinsics` for another), at the
+  calibration's size unless `--width/--height` rescale it. It draws no trail or HUD.
 - The square renderer draws the reference in blue with the current target point marked, and the
   flown path as an orange trail.
 - `--scene scenes/<Name>.glb` films the square inside a scanned IndoorUAV house (scenery only);

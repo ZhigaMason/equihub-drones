@@ -4,11 +4,13 @@
     uv run --extra sim drones-render-square runs/<name> --camera top --episodes 3
     uv run --extra sim drones-render-square runs/<name> --uncorrected --out uncorrected.mp4
     uv run --extra sim drones-render-square runs/<name> --scene scenes/Nemacolin.glb
+    uv run --extra sim drones-render-square runs/<name> --scene scenes/Nemacolin.glb --camera deck
 
 Flies fresh episodes with the policy's deterministic actions, as drones-eval-square does, and films
 them through CrazyFlow's MuJoCo renderer: the reference square in blue with the current target point
 highlighted, and the flown path as an orange trail. Writes runs/<name>/renders/<camera>-seed<N>.mp4
-unless --out says otherwise; its extension picks the format (.mp4, .gif, ...).
+unless --out says otherwise; its extension picks the format (.mp4, .gif, ...). --camera deck films
+what the AI-deck would see, as in drones-render-hover.
 
 --scene films it inside a scanned house from IndoorUAV (see drones.sim.scenes, and
 drones-download-scenes to fetch them). The scan is scenery only: the policy flies exactly as it
@@ -22,7 +24,8 @@ import os
 import sys
 from pathlib import Path
 
-from drones.rl.render import END_HOLD_SECONDS, open_writer  # reused, not copied
+from drones.rl.render import (END_HOLD_SECONDS, add_camera_arguments,  # reused, not copied
+                              check_camera_arguments, make_renderer, open_writer)
 
 # Room for the chase camera to orbit outside the flight path without being squeezed against an edge.
 XY_MARGIN = 1.5   # m
@@ -165,17 +168,11 @@ def main(argv=None):
     parser.add_argument('--out', type=Path,
                         help='video file, format from its extension '
                              '(default: RUN/renders/CAMERA-seedN.mp4)')
-    parser.add_argument('--camera', choices=('chase', 'top'), default='chase',
-                        help='chase: follows the drone; top: the whole square from above')
+    add_camera_arguments(parser, 'the whole square from above')
     parser.add_argument('--episodes', type=int, default=1)
     parser.add_argument('--seconds', type=float,
                         help='stop each episode after this long (default: the full episode)')
     parser.add_argument('--fps', type=float, default=25.0)
-    parser.add_argument('--width', type=int, default=640)
-    parser.add_argument('--height', type=int, default=480)
-    parser.add_argument('--font-scale', type=int, choices=(100, 150, 200), default=100,
-                        help='size of the text in the corner, in percent (default: 100, the '
-                             'smallest; for relatively smaller text, raise --width/--height)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--open-loop', action='store_true',
                         help='fly zero action (calibrated hover thrust, no feedback) for '
@@ -190,8 +187,7 @@ def main(argv=None):
         parser.error('--episodes must be at least 1')
     if args.fps <= 0 or (args.seconds is not None and args.seconds <= 0):
         parser.error('--fps and --seconds must be positive')
-    if min(args.width, args.height) < 16:
-        parser.error('--width and --height must be at least 16')
+    check_camera_arguments(parser, args)
     if args.scene is not None and not args.scene.is_file():
         parser.error(f'no scene at {args.scene}; fetch one with drones-download-scenes')
 
@@ -213,7 +209,7 @@ def main(argv=None):
     warnings.filterwarnings('ignore', message=r'os\.fork\(\) was called', category=RuntimeWarning)
 
     from drones.rl.evaluate_square import load_square_run
-    from drones.sim.render import HIDDEN_GROUP, TrajectoryRenderer
+    from drones.sim.render import HIDDEN_GROUP
 
     with jax.default_device(jax.devices(args.device)[0]):
         env, agent, params = load_square_run(args.run, 1, args.device,
@@ -252,8 +248,7 @@ def main(argv=None):
             geoms = lower + upper
             on_reset = move_scene(model, geoms, model.geom_pos[geoms].copy())
             print(f'Scene {scene.name}: {scene.clearance:.2f} m clear around the square')
-        with (TrajectoryRenderer(env, args.camera, args.width, args.height,
-                                 font_scale=args.font_scale, bounds=bounds) as renderer,
+        with (make_renderer(parser, env, args, bounds=bounds) as renderer,
               open_writer(out, fps) as writer):
             summaries, frames = film(env, act, jax.random.key(args.seed), renderer, writer,
                                      episodes=args.episodes, max_steps=max_steps, stride=stride,

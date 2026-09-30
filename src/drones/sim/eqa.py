@@ -84,6 +84,9 @@ INDOOR_UAV_SPLITS = ('train.csv', 'test_seen.csv', 'test_unseen.csv')
 INDOOR_UAV_FILES = ('instruction.json', 'instruction_pro.json', 'posture.json')
 # HM-EQA pads its four choices with this where a question has fewer; it is not a real option.
 NOT_AN_OPTION = '(Do not choose this option)'
+# m above the floor that a camera at a habitat start or path point is lifted to, the height
+# drones-explore-scene takes off to.
+EYE_HEIGHT = 1.0
 
 
 @dataclass
@@ -115,6 +118,37 @@ def _wrap(angle):
 def habitat_yaw(theta):
     """Our yaw for a habitat heading of `theta` about +y (at theta = 0 the agent faces -z)."""
     return _wrap(theta + math.pi / 2)
+
+
+def _lift(q, height):
+    """IndoorUAV's poses are already at the drone's flight height; habitat's are on the floor."""
+    return 0.0 if q.benchmark == 'indoor-uav' else height
+
+
+def start_pose(q, origin, height=EYE_HEIGHT):
+    """(position, yaw) to start question `q` from, in the scene file's frame, `height` above a
+    habitat start. `origin`, the scene's open floor (Scene.origin), stands in where the benchmark
+    gives no start (A-EQA)."""
+    if q.start is None:
+        pos = np.asarray(origin, float) + [0.0, 0.0, height]
+    else:
+        pos = q.start + [0.0, 0.0, _lift(q, height)]
+    return pos, q.yaw if q.yaw is not None else 0.0
+
+
+def path_poses(q, height=EYE_HEIGHT):
+    """(position, yaw) at each point of `q`'s reference path, facing along it; [] without one."""
+    if q.path is None or not len(q.path):
+        return []
+    points = q.path + [0.0, 0.0, _lift(q, height)]
+    yaw = q.yaw if q.yaw is not None else 0.0
+    poses = []
+    for i, p in enumerate(points):
+        step = points[min(i + 1, len(points) - 1)] - points[max(i - 1, 0)]
+        if np.hypot(step[0], step[1]) > 1e-6:   # hovering or climbing in place: keep the heading
+            yaw = math.atan2(step[1], step[0])
+        poses.append((p, yaw))
+    return poses
 
 
 def fetch(benchmark, dest=SCENES_DIR):

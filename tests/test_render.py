@@ -195,6 +195,29 @@ def test_cli_writes_a_playable_video(saved_run, tmp_path, camera, suffix):
     assert frames[0].shape[:2] == (128, 160)
 
 
+@needs_gl
+@pytest.mark.parametrize('size, expected', [((), (244, 324)), (('162', '122'), (122, 162))])
+def test_cli_films_the_deck_at_the_calibrated_size(saved_run, tmp_path, size, expected):
+    # Neither size is a multiple of 16, which imageio's mp4 writer rescales to by default: a
+    # rescaled frame no longer matches the calibration it was drawn through.
+    import imageio.v2 as imageio
+
+    intrinsics = tmp_path / 'intrinsics.json'
+    intrinsics.write_text(json.dumps({
+        'version': 1, 'width': 324, 'height': 244, 'fx': 183.9, 'fy': 187.1, 'cx': 165.4,
+        'cy': 145.1, 'distortion': [-0.0059, -0.0017, -0.0398, 0.0030]}))
+    out = tmp_path / 'deck.mp4'
+    sizes = ['--width', size[0], '--height', size[1]] if size else []
+    done = subprocess.run(
+        [sys.executable, '-m', 'drones.rl.render', str(saved_run), '--out', str(out),
+         '--camera', 'deck', '--intrinsics', str(intrinsics), '--seconds', '0.4', *sizes],
+        env=gl_env(), capture_output=True, text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-2000:]
+    frames = imageio.mimread(out, memtest=False)
+    assert len(frames) >= 2
+    assert frames[0].shape[:2] == expected
+
+
 @pytest.fixture(scope='module')
 def saved_square_run(tmp_path_factory):
     """A run directory as drones-train-square writes it, with untrained parameters."""

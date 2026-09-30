@@ -3,11 +3,16 @@
     uv run --extra sim drones-render-hover runs/<name>
     uv run --extra sim drones-render-hover runs/<name> --camera top --episodes 3
     uv run --extra sim drones-render-hover runs/<name> --open-loop --out open-loop.gif
+    uv run --extra sim drones-render-hover runs/<name> --camera deck
 
 Flies fresh episodes with the policy's deterministic actions, as drones-eval-hover does, and films
 them through CrazyFlow's MuJoCo renderer with the flight path drawn as a trail. Each episode samples
 its own room and start from the seed. Writes runs/<name>/renders/<camera>-seed<N>.mp4 unless --out
 says otherwise; its extension picks the format (.mp4, .gif, ...).
+
+--camera deck films what the AI-deck would see instead, through the intrinsics calibrated on the
+real deck (--intrinsics, recordings/intrinsics.json by default) and at their resolution unless
+--width/--height rescale it. See drones.sim.deck_camera.
 
 Headless Linux renders through EGL. Set MUJOCO_GL to use another backend, such as glfw on a desktop.
 """
@@ -17,6 +22,56 @@ import sys
 from pathlib import Path
 
 END_HOLD_SECONDS = 0.6   # each episode's last frame is held, so a crash is visible
+CAMERAS = ('chase', 'top', 'deck')
+TRAJECTORY_SIZE = (640, 480)   # default --width/--height of the chase and top cameras
+
+
+def add_camera_arguments(parser, top_help):
+    """--camera, --intrinsics, --width, --height and --font-scale, shared by the render CLIs."""
+    parser.add_argument('--camera', choices=CAMERAS, default='chase',
+                        help=f'chase: follows the drone; top: {top_help}; deck: what the '
+                             f"AI-deck sees, through the deck's calibrated lens")
+    parser.add_argument('--intrinsics', type=Path,
+                        help='deck camera calibration (default: recordings/intrinsics.json)')
+    parser.add_argument('--width', type=int,
+                        help=f"default: {TRAJECTORY_SIZE[0]}, or the calibration's for deck")
+    parser.add_argument('--height', type=int,
+                        help=f"default: {TRAJECTORY_SIZE[1]}, or the calibration's for deck")
+    parser.add_argument('--font-scale', type=int, choices=(100, 150, 200), default=100,
+                        help='size of the text in the corner, in percent (default: 100, the '
+                             'smallest; for relatively smaller text, raise --width/--height)')
+
+
+def check_camera_arguments(parser, args):
+    if args.camera != 'deck':
+        args.width = args.width or TRAJECTORY_SIZE[0]
+        args.height = args.height or TRAJECTORY_SIZE[1]
+    elif (args.width is None) != (args.height is None):
+        parser.error('--camera deck takes both --width and --height, or neither')
+    if args.width is not None and min(args.width, args.height) < 16:
+        parser.error('--width and --height must be at least 16')
+
+
+def make_renderer(parser, env, args, **kwargs):
+    """The renderer --camera names. `kwargs` go to a TrajectoryRenderer; the deck camera draws no
+    markers or text. Call after mujoco is imported, and after anything that replaces the model."""
+    if args.camera != 'deck':
+        from drones.sim.render import TrajectoryRenderer
+        return TrajectoryRenderer(env, args.camera, args.width, args.height,
+                                  font_scale=args.font_scale, **kwargs)
+    from drones.sim.deck_camera import DeckCamera
+    from drones.sim.lens import DECK_MOUNT, DEFAULT_INTRINSICS, Intrinsics, Mount
+    path = args.intrinsics or DEFAULT_INTRINSICS
+    if not path.is_file():
+        parser.error(f'no calibration at {path}; calibrate the deck (drones.vision.calibrate) or '
+                     f'pass --intrinsics')
+    intrinsics = Intrinsics.load(path)
+    if args.width is not None:
+        intrinsics = intrinsics.resized(args.width, args.height)
+    # Mount the camera as the trained policy's own raycast camera was, where the task has one.
+    sensors = getattr(env.config, 'sensors', None)
+    mount = Mount(DECK_MOUNT.offset, sensors.camera_pitch if sensors else 0.0)
+    return DeckCamera(env, intrinsics, mount=mount)
 
 
 def film(env, act, key, renderer, writer, *, episodes, max_steps, stride, label):
@@ -82,7 +137,9 @@ def open_writer(path, fps):
 
     if path.suffix.lower() == '.gif':
         return imageio.get_writer(path, mode='I', duration=1000 / fps, loop=0)
-    return imageio.get_writer(path, fps=fps)
+    # imageio otherwise rescales every frame to a multiple of 16 px, which would move every pixel
+    # of a deck render off the calibration it was drawn through. yuv420p needs only even sizes.
+    return imageio.get_writer(path, fps=fps, macro_block_size=2)
 
 
 def main(argv=None):
@@ -91,17 +148,11 @@ def main(argv=None):
     parser.add_argument('--out', type=Path,
                         help='video file, format from its extension '
                              '(default: RUN/renders/CAMERA-seedN.mp4)')
-    parser.add_argument('--camera', choices=('chase', 'top'), default='chase',
-                        help='chase: follows the drone; top: the whole room from above')
+    add_camera_arguments(parser, 'the whole room from above')
     parser.add_argument('--episodes', type=int, default=1)
     parser.add_argument('--seconds', type=float,
                         help='stop each episode after this long (default: the full episode)')
     parser.add_argument('--fps', type=float, default=25.0)
-    parser.add_argument('--width', type=int, default=640)
-    parser.add_argument('--height', type=int, default=480)
-    parser.add_argument('--font-scale', type=int, choices=(100, 150, 200), default=100,
-                        help='size of the text in the corner, in percent (default: 100, the '
-                             'smallest; for relatively smaller text, raise --width/--height)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--open-loop', action='store_true',
                         help='fly zero action (calibrated hover thrust, no feedback) for '
@@ -112,8 +163,7 @@ def main(argv=None):
         parser.error('--episodes must be at least 1')
     if args.fps <= 0 or (args.seconds is not None and args.seconds <= 0):
         parser.error('--fps and --seconds must be positive')
-    if min(args.width, args.height) < 16:
-        parser.error('--width and --height must be at least 16')
+    check_camera_arguments(parser, args)
 
     # The GL backend is fixed when mujoco is imported, so this goes before anything imports it.
     if sys.platform.startswith('linux'):
@@ -134,7 +184,6 @@ def main(argv=None):
 
     from drones.rl.evaluate import load_run
     from drones.rl.networks import ActorCritic
-    from drones.sim.render import TrajectoryRenderer
 
     with jax.default_device(jax.devices(args.device)[0]):
         env, model, params = load_run(args.run, 1, args.device)
@@ -152,8 +201,7 @@ def main(argv=None):
         suffix = '-open-loop' if args.open_loop else ''
         out = args.out or args.run / 'renders' / f'{args.camera}-seed{args.seed}{suffix}.mp4'
         out.parent.mkdir(parents=True, exist_ok=True)
-        with (TrajectoryRenderer(env, args.camera, args.width, args.height,
-                                 font_scale=args.font_scale) as renderer,
+        with (make_renderer(parser, env, args) as renderer,
               open_writer(out, fps) as writer):
             summaries, frames = film(env, act, jax.random.key(args.seed), renderer, writer,
                                      episodes=args.episodes, max_steps=max_steps, stride=stride,

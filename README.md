@@ -19,6 +19,7 @@ reuse the exact control law the drone flies.
 | `uv run --extra sim drones-render-square runs/<name>` | Film a square policy flying in the simulator (MP4 or GIF) |
 | `uv run --extra sim drones-download-scenes` | Fetch ten scanned houses from IndoorUAV (ModelScope) to film the square in |
 | `uv run --extra sim drones-explore-scene` | Fly the simulated drone around those houses: WASD, arrows for height and turning; `--benchmark` shows EQA questions about them |
+| `uv run --extra sim drones-render-agent --benchmark hm-eqa --question 4` | Film an agent in a scanned house: chase camera beside its own calibrated camera |
 | `uv run drones-fly-square runs/<name>/policy` | Fly the square on the real drone, or let the firmware fly it and log (`--firmware`) |
 | `uv run --extra sim drones-finetune-square runs/<name> --flights …` | Fit the simulator to real flights, then finetune the policy in it |
 | `uv run --extra camera drones-camera` | Live view of the AI-deck camera, streamed over Wi-Fi |
@@ -73,6 +74,11 @@ src/drones/
     sensors.py        Multi-ranger, Flow deck, IMU and a colour camera, as batched JAX
     hover_env.py      the hover-stabilisation task, pure functions of an EnvState
     render.py         offscreen video of one world: chase and top-down cameras, flight-path trail
+    lens.py           calibrated camera for any model: intrinsics.json or a field of view, mount
+    deck_camera.py    offscreen AI-deck view of a drone in an env, through lens.py
+    scene_view.py     camera images of a dataset scan alone, posed in benchmark coordinates
+    agents.py         the agent interface (reset, act), built-in agents, the episode loop
+    render_agent.py   drones-render-agent: chase camera and agent camera, side by side
     square_env.py     the square task: differentiable, for SHAC
     residual.py       a learned force and torque correcting the dynamics
     calibration.py    hover-thrust calibration
@@ -461,6 +467,7 @@ uv run --extra sim drones-render-hover runs/<name>                          # re
 uv run --extra sim drones-render-hover runs/<name> --camera top --episodes 3 --seed 7
 uv run --extra sim drones-render-hover runs/<name> --open-loop              # the zero-action baseline
 uv run --extra sim drones-render-hover runs/<name> --out flight.gif --width 320 --height 240
+uv run --extra sim drones-render-hover runs/<name> --camera deck           # what the AI-deck sees
 ```
 
 This flies one world with the policy's deterministic actions, as `drones-eval-hover` does, and films
@@ -474,6 +481,15 @@ it through CrazyFlow's MuJoCo renderer:
 - The video goes to `runs/<name>/renders/` unless `--out` names a file, and the extension picks the
   format. MP4 uses the ffmpeg bundled with the `sim` extra. A GIF holds every frame in memory until
   it is written, so keep GIFs small.
+
+`--camera deck` films from the AI-deck on the drone instead. It uses the lens calibrated on the
+real deck: `recordings/intrinsics.json` by default, or another file through `--intrinsics`. The
+frames match what `drones-fpv --record` stores: the same size, principal point (which sits ~24 px
+below the image centre) and distortion. `--width`/`--height` rescale the calibration, for example
+to `162 122` for the halved colour stream. The camera is mounted 2 cm forward and 1.5 cm up, an
+estimate that has not been measured, and pitched like the task's raycast camera. The deck view
+draws no trail or text, and it hides its own drone: CrazyFlow's arms and props would otherwise
+fill its lower corners. It works with `--scene` too.
 
 It renders `runs/<name>/params.msgpack`, which always holds the latest iterate. Training overwrites
 it every `--save-every` iterations (100 by default) and at the end. The write is atomic, so rendering
@@ -554,6 +570,7 @@ with the most IndoorUAV trajectories, 254 MB in total, into `scenes/` (git-ignor
 uv run --extra sim drones-download-scenes                     # or name scenes: ... Adrian Bowlus
 uv run --extra sim drones-render-square runs/<name> --scene scenes/Bowlus.glb
 uv run --extra sim drones-render-square runs/<name> --scene scenes/Bowlus.glb --camera top
+uv run --extra sim drones-render-square runs/<name> --scene scenes/Bowlus.glb --camera deck
 ```
 
 The scan is scenery only, added to the renderer's model and never to the dynamics or the sensors,
@@ -561,6 +578,51 @@ so the policy flies exactly as without it. Each episode the scan is moved so its
 floor on any storey is under the square. The chase camera stays inside that patch, and the top
 camera cuts the house off at 2 m so walls and ceiling do not hide the flight. Clear space found in
 the default ten ranges from 0.95 m (Capistrano) to 3.15 m (Bowlus), measured as a half-width.
+
+**Images for benchmark inference** (`drones.sim.scene_view`). An agent answering an EQA question
+or following an IndoorUAV instruction only needs a camera image for each pose. `SceneView` renders
+a downloaded scan alone, without a CrazyFlow simulator. Poses are in the benchmark's own
+coordinates, the scan file's frame:
+
+```python
+from drones.sim import eqa
+from drones.sim.lens import DECK_MOUNT, Intrinsics
+from drones.sim.scene_view import SceneView
+
+q = eqa.load('hm-eqa')[0]
+with SceneView(q.scene, Intrinsics.load(), mount=DECK_MOUNT) as view:
+    pos, yaw = eqa.start_pose(q, view.scene.origin)   # 1 m above a habitat start
+    image = view.render(pos, yaw)                     # (244, 324, 3) uint8; pitch=, roll= too
+    frames = [view.render(p, y) for p, y in eqa.path_poses(q)]   # along a reference path
+```
+
+`Intrinsics.load()` is the real deck's lens, distortion included, and
+`Intrinsics.from_fov(w, h, hfov)` is an ideal pinhole like habitat-sim's. On an HM3D house, loading
+takes about 3.5 s and a frame about 0.07 s, on CPU with EGL.
+
+**Watching an agent** (`drones-render-agent`). This films any agent in a scan as a video. On the
+left, a chase camera shows CrazyFlow's drone from behind, pulled in where the scan is closer. On
+the right is the image the agent itself is given, through the calibrated lens (or `--fov`). A
+caption underneath shows the step, the pose and the question.
+
+```bash
+uv run --extra sim drones-render-agent --benchmark hm-eqa --question 4               # look-around
+uv run --extra sim drones-render-agent --benchmark indoor-uav --question 7 --agent follow-path
+uv run --extra sim drones-render-agent --scene Bowlus --fov 90 --agent mypkg.nav:make_agent \
+    --agent-arg model=small --agent-arg temperature=0.2
+```
+
+An agent is any object with two methods. `reset(question, pose)` starts an episode.
+`act(observation)` is given the camera image, pose, step and question, and returns the next `Pose`,
+or `None` to stop. An optional `answer` is printed next to the benchmark's answer. `--agent
+package.module:factory` loads your own agent; `--agent-arg` values become the factory's keyword
+arguments. Two agents are built in: `look-around` turns once in place, and `follow-path` flies the
+question's reference path (EXPRESS-Bench, IndoorUAV).
+
+The agent moves kinematically: nothing collides with the scan, as with habitat-sim's own agents.
+The question's scene is downloaded if needed. Videos go to `runs/agent-renders/` unless `--out`
+names a file. `drones.sim.agents.episode` is the same loop without the video, for running a
+benchmark.
 
 **Flying around them yourself** (`drones-explore-scene`) opens a window with the simulated drone in
 a scan, flown from the keyboard. This is simulator only; it never touches the radio.

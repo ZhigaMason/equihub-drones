@@ -130,6 +130,16 @@ frame guess against walls, not floors. HM3D's
   glTF: `scenes.debasis_glb` flips them, and without that a scan renders as confetti.
   IndoorUAV's own `posture.json` rows are `[x, y, height, yaw°]`, which is habitat's (x, z, y), so
   here they are `(x, -y, height)` with yaw `90° - yaw`. Its JSON is GBK-encoded, not UTF-8.
+- **`recordings/intrinsics.json` is read by `sim/lens.py` and written by
+  `vision/calibrate.py`** (on the `neural-sandbox` branch). It uses OpenCV's pinhole convention:
+  pixel centres at integers, distortion `k1 k2 p1 p2` with k3 fixed at 0. Change the format in both
+  places and bump `version` in both. Films of the deck view go through
+  `rl/render.py:open_writer`, which keeps the frame size: imageio would otherwise rescale
+  324×244 to a multiple of 16 and break the calibration.
+- **Every simulated camera image goes through `sim/lens.py:LensCamera`**, whatever the model:
+  `DeckCamera` (a drone in an env) and `SceneView` (a dataset scan alone) only choose the model
+  and the pose. `SceneView` poses are in the scan *file's* frame, the frame benchmark poses are in.
+  That is not the shifted world of `scenes.load` + `attach`, where the open floor is the origin.
 - **Text in the explorer: `mjr_overlay` silently stops at 500 characters (`mjMAXOVERLAY`).**
   Longer text goes through `Explorer._draw_panel` (`mjr_rectangle` + `mjr_text`). `mjr_text`'s
   (x, y) are relative to the viewport of the *previous* `mjr_` call, not the window. MuJoCo's fonts
@@ -168,6 +178,13 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
 - **A new simulated task** → beside `sim/hover_env.py` and `sim/square_env.py`, reusing
   `sim/sensors.py` and the room scene. If it must be differentiable (for SHAC), cast no rays and
   keep every reward term smooth.
+- **Benchmark inference** (an agent answering EQA questions or following IndoorUAV instructions
+  from images) → `sim/scene_view.py:SceneView`, with poses from `eqa.start_pose` /
+  `eqa.path_poses`. It builds no CrazyFlow Sim; step a Sim only when the dynamics matter. An
+  agent is anything with `reset(question, pose)` and `act(observation) -> Pose | None`
+  (`sim/agents.py`). Run it with `agents.episode`, or film it with `drones-render-agent --agent
+  package.module:factory`. Do not make agents subclass anything, and keep the agent code itself
+  out of this repo's `sim/` unless it is a baseline.
 - **A new learning algorithm** → `src/drones/rl/`. Decide deliberately what the policy outputs:
   attitude commands replace the firmware's position and velocity loops; emitting a
   `control.mixer.Command` instead keeps the teleop safety layer underneath.
@@ -222,7 +239,8 @@ uv sync --extra sim --extra gpu      # adds jax[cuda12]
 uv sync --extra camera               # OpenCV, for drones-camera and drones-fpv (AI-deck video)
 ```
 
-`uv sync` drops extras you do not name, so list every one you want each time.
+`uv sync` drops extras you do not name, so list every one you want each time. That includes the
+sync that registers a new entry point: `uv sync --extra sim` alone uninstalls OpenCV.
 
 `drones-download-scenes` (sim extra) puts IndoorUAV scans in `scenes/`, git-ignored like `runs/`.
 Never commit them. `drones-explore-scene` flies the *simulated* drone around them from the keyboard
@@ -234,3 +252,7 @@ instructions. Code that picks scenes goes through `eqa.busiest` / `prepare` / `l
 `eqa.load` alone: IndoorUAV's prompts arrive per scene, so `load` returns only prepared scenes.
 Benchmark files are cached in `scenes/benchmarks/`, HM3D scenes in `scenes/hm3d/`, and the pinned Basis decoder in
 `~/.cache/drones/`.
+
+`drones-render-agent` renders offscreen (EGL) and touches no hardware, so you may run it; it
+downloads a question's scene if missing. Tests must not depend on `scenes/`:
+`tests/test_agents.py` swaps `scene_view.load_scene` for a synthetic box and runs `main()` on it.
