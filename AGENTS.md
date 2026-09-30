@@ -212,8 +212,11 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   agent has acted on it: a caption read any earlier describes the previous frame, and the frame
   the agent stopped on would never show why.
 - **A VLM that flies** → `src/drones/vlm/`. The schema a model must reply in is
-  `vlm/actions.py`, and it is the contract: change the fields or `CHUNK` there, and the prompt's
-  example (`vlm/prompt.py:example`) is tested against it. Another model or a server is a new
+  `vlm/actions.py`, and it is the contract: change the fields, the moves or `CHUNK` there, and
+  update the action-space description in `vlm/prompt.py` with them. The prompt shows the reply
+  format as a template with numbered slots, never as a finished chunk: given one complete
+  example, Gemma 3n E2B returned that example for every frame. `tests/test_vlm_prompt.py` fails
+  if any line of the prompt would pass as a reply. Another model or a server is a new
   `Backend` (`generate(prompt, image) -> str`), not a change to `Pilot`. A real-drone adapter
   would call `Pilot.step` and pass each Command to `DroneController.set_control`; none exists yet,
   and writing one does not make it something an agent may run. The size of one action comes from

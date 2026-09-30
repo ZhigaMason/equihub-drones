@@ -1,55 +1,105 @@
 """The words a VLM pilot is given with each frame.
 
 The model sees one image and has no memory, so the prompt carries everything else: the question,
-the altitude and time it cannot see, and what one action does in centimetres and degrees. Those
-sizes come from `drones.config`, the limits the actions are executed with, so the prompt cannot
-drift from the flight envelope.
+the altitude and time it cannot see, and the action space, which is what each action does to the
+drone and to the picture, in centimetres and degrees, and what a whole chunk of it adds up to.
+Those sizes come from `drones.config`, the limits the actions are executed with, so the prompt
+cannot drift from the flight envelope.
 
-The format is shown as one complete, valid chunk rather than described. A small model counts to
-16 more reliably from an example than from an instruction.
+The reply format is a template with a slot for each action, never a finished chunk. The first
+prompt showed one complete, valid example, and Gemma 3n E2B sent that example back for every
+frame (with its turn reversed), whatever the image: it read the example as the answer. Nothing in
+the prompt may therefore parse as a reply, which `tests/test_vlm_prompt.py` holds it to. The
+slots are numbered so that a small model still has sixteen things to fill in, not a count to keep.
 """
-import json
-
 from drones import config
-from drones.vlm.actions import CHUNK, STEP, schema_for
+from drones.vlm.actions import CHUNK, MOVES, STEP, schema_for
 
 ROLE = ('You are the pilot of a small indoor drone. The image is the view from its forward '
         'camera right now.')
 EXPLORE = 'There is no question. Your task: explore the space without flying into anything.'
-DONE = '{"actions": [], "done": true, "answer": "your answer"}'
+DONE = '{"actions": [], "done": true, "answer": ANSWER}'
 # Characters of a rejected reply and of its error shown on a retry. A reply can run to the token
 # limit and pydantic reports every bad action, so both are cut.
 REPLY_SHOWN = 1000
 ERROR_SHOWN = 500
 
 
-def example(space):
-    """A complete valid chunk in action space `space`, as JSON: ahead, then a left turn."""
-    schema_for(space)
-    if space == 'discrete':
-        actions = ['forward'] * 12 + ['turn_left'] * 4
-    else:
-        actions = ([{'forward': 1.0, 'yaw': 0.0, 'altitude': None}] * 12
-                   + [{'forward': 0.0, 'yaw': 1.0, 'altitude': None}] * 4)
-    return json.dumps({'actions': actions, 'done': False, 'answer': None})
+def template(slot):
+    """The reply format, with `slot`1 .. `slot`16 where the actions go. Not valid JSON."""
+    slots = ', '.join(f'{slot}{i}' for i in range(1, CHUNK + 1))
+    return '{"actions": [' + slots + '], "done": false, "answer": null}'
 
 
-def _actions(space):
+def _action_space(space):
+    """What the actions of `space` are and do, sized from the flight limits."""
     ahead = config.MAX_MANUAL_SPEED * STEP * 100    # cm per action at full scale
     turn = config.MAX_YAW_RATE * STEP               # degrees
     climb = config.MAX_CLIMB_SPEED * STEP * 100     # cm
+    far, around = ahead * CHUNK, turn * CHUNK       # a whole chunk of one action
+    chunk = (f'You give {CHUNK} at a time. They are flown in order over the next second, and '
+             'then you are shown the new view.')
     if space == 'discrete':
-        return ['Each action is one of these words:',
-                f'- "forward", "backward": move {ahead:.1f} cm.',
-                f'- "turn_left", "turn_right": turn {turn:.1f} degrees.',
-                f'- "rise", "descend": climb or sink {climb:.1f} cm.',
-                '- "hover": stay still.']
-    return ['Each action is {"forward": F, "yaw": Y, "altitude": H}:',
-            f'- F is from -1 to 1. 1 moves {ahead:.1f} cm forward, -1 the same distance back.',
-            f'- Y is from -1 to 1. 1 turns {turn:.1f} degrees left, -1 the same angle right.',
-            f'- H is the altitude to fly to, from {config.MIN_ALTITUDE:g} to '
-            f'{config.MAX_ALTITUDE:g} m, or null to stay level. One action climbs or sinks at '
-            f'most {climb:.1f} cm.']
+        return [f'ACTION SPACE. You fly with {len(MOVES)} moves. Each lasts 1/{CHUNK} of a '
+                'second:',
+                f'- "forward": fly {ahead:.1f} cm towards the centre of the image.',
+                f'- "backward": fly {ahead:.1f} cm away from it.',
+                f'- "turn_left": rotate {turn:.1f} degrees to the left. What is on the left of '
+                'the image comes towards its centre.',
+                f'- "turn_right": rotate {turn:.1f} degrees to the right. What is on the right '
+                'of the image comes towards its centre.',
+                f'- "rise": climb {climb:.1f} cm.',
+                f'- "descend": sink {climb:.1f} cm.',
+                '- "hover": stay still.',
+                f'{chunk} Repeat a move to do more of it: {CHUNK} times "forward" is '
+                f'{far:.0f} cm ahead, {CHUNK} times "turn_left" is {around:.0f} degrees to the '
+                'left.']
+    return ['ACTION SPACE. You fly with actions of the form {"forward": F, "yaw": Y, '
+            f'"altitude": H}}. Each lasts 1/{CHUNK} of a second:',
+            f'- F is a number from -1 to 1, the speed along the view. 1 flies {ahead:.1f} cm '
+            'towards the centre of the image, -1 the same distance away from it, 0 stays in '
+            'place, 0.5 is half of 1.',
+            f'- Y is a number from -1 to 1, the turn. 1 rotates {turn:.1f} degrees to the left, '
+            'so what is on the left of the image comes towards its centre; -1 the same angle to '
+            'the right; 0 keeps the heading.',
+            f'- H is the altitude to fly to in metres, from {config.MIN_ALTITUDE:g} to '
+            f'{config.MAX_ALTITUDE:g} m, or null to stay at this height. One action climbs or '
+            f'sinks at most {climb:.1f} cm.',
+            'F and Y act together: F 1 with Y 0.5 flies a curve to the left.',
+            f'{chunk} Repeat an action to do more of it: {CHUNK} times F 1 is {far:.0f} cm '
+            f'ahead, {CHUNK} times Y 1 is {around:.0f} degrees to the left.']
+
+
+def _how_to_choose(question):
+    if question:
+        seek = ['- If what the task names is in view, turn until it is in the centre of the '
+                'image, then fly forward to it.',
+                '- If it is not in view, turn to look around.']
+    else:
+        seek = ['- If the way ahead is open, fly forward.',
+                '- Turn now and then, to see the parts of the space you have not seen.']
+    return ['HOW TO CHOOSE. Look at the image before you choose. Your actions must fit this '
+            'image, not any other.',
+            *seek,
+            '- Do not fly forward into a wall or an obstacle that fills the centre of the '
+            'image. Turn towards the open side first.']
+
+
+def _reply(space, question, choices):
+    if space == 'discrete':
+        slot, what = 'm', f'one of the {len(MOVES)} moves, in double quotes'
+    else:
+        slot, what = 'a', 'an action {"forward": F, "yaw": Y, "altitude": H} with your numbers'
+    lines = ['REPLY. One JSON object and nothing else:',
+             template(slot),
+             f'with each of {slot}1 to {slot}{CHUNK} replaced by {what}. There are exactly '
+             f'{CHUNK}.',
+             'When the task is complete, reply like this instead:',
+             DONE,
+             'with ANSWER replaced by your answer in double quotes.']
+    if question and choices:
+        lines.append('Your answer is the letter of your choice.')
+    return lines
 
 
 def build_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0):
@@ -66,18 +116,11 @@ def build_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0):
     lines += ['',
               f'The drone is {altitude:.2f} m above the floor and has flown for {elapsed:.0f} s.',
               '',
-              f'Choose its next {CHUNK} actions. They are played one after another over the next '
-              'second, and then you are shown the new view.',
-              *_actions(space),
+              *_action_space(space),
               '',
-              f'Reply with one JSON object and nothing else, holding exactly {CHUNK} actions. '
-              'For example:',
-              example(space),
+              *_how_to_choose(question),
               '',
-              'When the task is complete, reply like this instead:',
-              DONE]
-    if question and choices:
-        lines.append('Answer with the letter of your choice.')
+              *_reply(space, question, choices)]
     return '\n'.join(lines)
 
 

@@ -875,8 +875,9 @@ height as `--agent-arg start_altitude=`. Otherwise the altitude the model is tol
 
 ### Measured here
 
-On this laptop (16 cores, no GPU) with `google/gemma-3n-E2B-it`, three chunks per mode in the
-Bowlus scan, with no question, so the task was to explore:
+These numbers are from the first version of the prompt, which showed the reply format as one
+complete example chunk. On this laptop (16 cores, no GPU) with `google/gemma-3n-E2B-it`, three
+chunks per mode in the Bowlus scan, with no question, so the task was to explore:
 
 | Action space | Seconds per model call | Valid at once | Valid after the retry | Failed |
 | --- | --- | --- | --- | --- |
@@ -891,8 +892,14 @@ follow the picture. In discrete mode all three replies were the same chunk, twel
 four `turn_right`, which is the prompt's own example with the turn reversed, for three different
 frames. In continuous mode all three were sixteen actions of zero, so the drone did not move. Three
 chunks in one scene are a smoke test, not an evaluation, but they say this 2B model copies the
-format more than it reads the image; a larger model or a prompt without a full example is the next
-thing to try.
+format more than it reads the image.
+
+The prompt has been rewritten since, because of that. It now describes the action space (what each
+action does to the drone and to the picture, and what sixteen of one add up to), says how to
+choose from the image, and shows the reply format as a template with sixteen numbered slots
+instead of an example that could be sent straight back. **The new prompt has not been measured
+with a model yet**: whether the replies are still valid at once, and whether they now differ from
+frame to frame, is the next thing to find out.
 
 Limits to know about: the model sees one frame and remembers nothing, so it can circle; nothing
 collides with the scan, so it can fly through walls; and it flies only in the simulator. The pilot
