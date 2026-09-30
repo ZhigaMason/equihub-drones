@@ -51,6 +51,15 @@ gpu = [
 camera = [
     "opencv-python>=5.0.0.93",
 ]
+# The VLM pilot's local model (drones.vlm.backend). Heavy: torch brings its CUDA libraries on
+# Linux whether or not there is a GPU. Nothing else in the project needs it.
+vlm = [
+    "accelerate>=1.0",
+    "pillow>=12.3",
+    "timm>=1.0",  # Gemma 3n's vision tower loads through TimmWrapperModel
+    "torch>=2.9",
+    "transformers>=5.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.10.2,<0.11"]
