@@ -123,6 +123,33 @@ def test_ask_goes_with_a_scene_not_a_benchmark(capsys):
     assert '--ask goes with --scene' in capsys.readouterr().err
 
 
+def backend(**changes):
+    """The OpenGL backend mujoco has settled on once the drones-render-agent module is imported,
+    in an environment with no display and no MUJOCO_GL, plus `changes`."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('DISPLAY', 'WAYLAND_DISPLAY', 'MUJOCO_GL')}
+    env.update(changes)
+    code = ('import drones.sim.render_agent, mujoco; '
+            'print(mujoco.GLContext.__module__)')
+    done = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout.strip().splitlines()[-1]
+
+
+@needs_gl
+def test_without_a_display_the_render_command_uses_egl():
+    # mujoco fixes its backend when it is first imported, which importing drones.sim already
+    # does: a choice made in main() comes too late, and a cluster node then gets GLFW.
+    assert backend() == 'mujoco.egl'
+    assert backend(DISPLAY=':0', MUJOCO_GL='egl') == 'mujoco.egl'
+
+
+def test_with_a_display_or_a_choice_of_its_own_the_backend_is_left_alone():
+    assert backend(DISPLAY=':0') == 'mujoco.glfw'
+    assert backend(WAYLAND_DISPLAY='wayland-0') == 'mujoco.glfw'
+    assert backend(MUJOCO_GL='glfw') == 'mujoco.glfw'
+
+
 CLI_ON_A_BOX = textwrap.dedent('''
     import json, sys
     import numpy as np

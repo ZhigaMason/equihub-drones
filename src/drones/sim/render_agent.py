@@ -19,11 +19,12 @@ question's start pose (eqa.start_pose) and its scene is downloaded if needed. Wi
 starts over the scan's most open floor, and --ask gives it a question of your own.
 
 Writes runs/agent-renders/<name>.mp4 unless --out says otherwise; the extension picks the format.
-Headless Linux renders through EGL. Set MUJOCO_GL to use another backend, such as glfw on a desktop.
+Without a display (a cluster node, over ssh) it renders through EGL, with one through GLFW; set
+MUJOCO_GL to choose (egl, osmesa, glfw). The choice is made in drones/sim/__init__.py, because
+mujoco settles it on first import, which is before main() runs.
 """
 import argparse
 import math
-import os
 import sys
 import textwrap
 from pathlib import Path
@@ -156,9 +157,6 @@ def main(argv=None):
         parser.error('--fps and --scale must be positive, --steps not negative')
     agent_kwargs = parse_agent_args(parser, args.agent_arg)
 
-    # The GL backend is fixed when mujoco is imported, so this goes before anything imports it.
-    if sys.platform.startswith('linux'):
-        os.environ.setdefault('MUJOCO_GL', 'egl')
     try:
         import drones.sim  # noqa: F401  CrazyFlow first, before anything imports scipy.
         import imageio.v2 as imageio

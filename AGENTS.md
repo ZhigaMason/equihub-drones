@@ -141,6 +141,15 @@ frame guess against walls, not floors. HM3D's
   `DeckCamera` (a drone in an env) and `SceneView` (a dataset scan alone) only choose the model
   and the pose. `SceneView` poses are in the scan *file's* frame, the frame benchmark poses are in.
   That is not the shifted world of `scenes.load` + `attach`, where the open floor is the origin.
+- **mujoco's OpenGL backend is settled by `import drones.sim`, not by `main()`.** mujoco reads
+  `MUJOCO_GL` once, on first import, and takes GLFW when it is unset. CrazyFlow imports mujoco and
+  `drones/sim/__init__.py` imports CrazyFlow, so a console script under `drones.sim` has the
+  backend fixed before its `main()` runs: `drones-render-agent` set EGL there for months without
+  effect and died on a cluster node with "X11: The DISPLAY environment variable is missing". The
+  choice now lives in `drones/sim/__init__.py` (EGL when there is no display). `drones.rl` does not
+  import mujoco on import, so its render commands may still choose in `main()`. A laptop is a
+  poor test of this: with `DISPLAY` unset GLFW still finds the Wayland socket, so check the
+  backend itself (`mujoco.GLContext.__module__`), as `tests/test_agents.py` does.
 - **torch and an EGL context in one process: keep triton out.** torch imports triton when it is
   installed (on Linux it always is), and triton's bundled LLVM segfaults on import once Mesa has
   made an EGL context, with no message, only exit code 139. torch imports it lazily
