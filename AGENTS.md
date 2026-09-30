@@ -55,7 +55,7 @@ Dependencies only ever point downwards. `tests/test_architecture.py` fails if th
 | --- | --- | --- |
 | `control/` | stdlib, `drones.config` | The flight control law. No cflib, no web, no JAX. |
 | `policy/` | numpy | Runs on the flying laptop, which has neither JAX nor the simulator. |
-| `vlm/` | pydantic, numpy, `drones.control` | The VLM pilot. torch, transformers and PIL (the `vlm` extra) are imported inside functions only. `vlm/agent.py` alone imports `sim/`. |
+| `vlm/` | pydantic, numpy, `drones.control`, `drones.config` | The VLM pilot. torch, transformers and PIL (the `vlm` extra) are imported inside functions only. `vlm/agent.py` alone imports `sim/`. |
 | `crazyflie/`, `missions/` | + cflib, numpy | Everything that talks to real hardware. `crazyflie/camera.py` also uses OpenCV (the `camera` extra), imported inside functions only. |
 | `sim/`, `rl/` | + JAX, flax, optax, CrazyFlow | The `sim` extra. Never imported by the above. |
 
@@ -143,10 +143,13 @@ frame guess against walls, not floors. HM3D's
   That is not the shifted world of `scenes.load` + `attach`, where the open floor is the origin.
 - **torch and an EGL context in one process: keep triton out.** torch imports triton when it is
   installed (on Linux it always is), and triton's bundled LLVM segfaults on import once Mesa has
-  made an EGL context, with no message, only exit code 139. The other order works.
+  made an EGL context, with no message, only exit code 139. torch imports it lazily
+  (`torch._dynamo`, `torch.utils.flop_counter`), well after `import torch`, so importing torch
+  before the renderer does not help; only importing triton itself first does.
   `vlm/backend.py:_load` sets `sys.modules['triton'] = None` before importing torch, which torch
-  reads as triton not being installed. Anything else that loads torch beside the simulator's
-  renderer needs the same. Find such a crash with `python -X faulthandler`.
+  reads as triton not being installed, and logs "triton not found" for. Anything else that loads
+  torch beside the simulator's renderer needs the same. Find such a crash with
+  `python -X faulthandler`.
 - **transformers' image-text-to-text pipeline takes generation options only in
   `generate_kwargs`.** Any other keyword goes to the processor and is dropped with a warning, so
   `do_sample=False` passed directly still samples, as Gemma's own generation config says to.
@@ -277,6 +280,9 @@ downloads a question's scene if missing. Tests must not depend on `scenes/`:
 `tests/test_agents.py` swaps `scene_view.load_scene` for a synthetic box and runs `main()` on it.
 
 The VLM pilot has no entry point of its own: it is `drones-render-agent --agent
-drones.vlm.agent:make --agent-arg action_space=discrete --fps 16`. One step is 1/16 s, so 16 fps is
-real time. A run loads a local model (`google/gemma-3n-E2B-it`, gated) and is slow without a GPU;
-the tests script the replies instead and load nothing.
+drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48`. One step is 1/16 s,
+so 16 fps is real time. A run loads a local model (`google/gemma-3n-E2B-it`, gated) and is slow
+without a GPU: about a minute per model call, one call per 16 steps, so always pass `--steps` (the
+default 500 is half an hour or more). The tests script the replies instead and load nothing. The
+agent assumes its start is `start_altitude` (1.0 m) above the floor, which is wrong for
+`indoor-uav` and after `--eye-height`; pass the real height.

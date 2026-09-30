@@ -27,7 +27,9 @@ class _Strict(BaseModel):
     # extra='forbid': a misspelt key must be an error, not a silently defaulted field.
     # allow_inf_nan=False: JSON parsers accept NaN and Infinity, and a NaN altitude would reach
     # the pose.
-    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    # strict=True: pydantic otherwise coerces, and would fly `"forward": true` as full speed
+    # ahead and end the episode on `"done": "true"`. A whole number is still a float.
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False, strict=True)
 
 
 class ContinuousAction(_Strict):

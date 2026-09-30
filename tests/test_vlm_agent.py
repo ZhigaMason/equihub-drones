@@ -153,3 +153,22 @@ def test_make_loads_no_model():
     agent = vlm_agent.make()
     assert agent.pilot.backend._pipe is None
     assert agent.pilot.space == 'continuous'
+
+
+def test_each_model_call_is_reported_as_it_happens(capsys):
+    # A call takes a minute or more on a CPU, and drones-render-agent prints nothing until the
+    # film is written.
+    run(moves('forward'), 'nonsense', 'nonsense', DONE)
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith('vlm:')]
+    assert len(lines) == 3
+    assert 'chunk 1 at 0 s' in lines[0] and 'valid' in lines[0]
+    assert 'chunk 2 at 1 s' in lines[1] and 'failed' in lines[1]
+    assert 'no JSON object' in lines[1]
+    assert 'chunk 3 at 2 s' in lines[2] and 'done' in lines[2] and "'B'" in lines[2]
+
+
+def test_giving_up_is_reported_with_the_error(capsys):
+    run(*['nonsense'] * 6)
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith('vlm:')]
+    assert len(lines) == 3
+    assert 'stopping' in lines[-1] and 'no JSON object' in lines[-1]

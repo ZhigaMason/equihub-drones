@@ -138,3 +138,26 @@ def test_an_unknown_action_space_names_the_valid_ones():
         schema_for('categorical')
     with pytest.raises(ValueError, match='continuous, discrete'):
         parse_chunk(discrete(), 'categorical')
+
+
+@pytest.mark.parametrize('action', [
+    {'forward': True, 'yaw': 0.0},
+    {'forward': '0.5', 'yaw': 0.0},
+    {'forward': 0.0, 'yaw': 0.0, 'altitude': True},
+    {'forward': 0.0, 'yaw': 0.0, 'altitude': '1.2'},
+])
+def test_a_value_of_the_wrong_type_is_rejected_not_coerced(action):
+    # pydantic's default would fly `true` as full speed ahead.
+    with pytest.raises(ValidationError):
+        parse_chunk(continuous(action=action), 'continuous')
+
+
+@pytest.mark.parametrize('done', ['"true"', '1'])
+def test_done_must_be_a_boolean(done):
+    with pytest.raises(ValidationError):
+        parse_chunk('{"done": %s, "answer": "B"}' % done, 'discrete')
+
+
+def test_whole_numbers_are_still_numbers():
+    chunk = parse_chunk(continuous(action={'forward': 1, 'yaw': -1, 'altitude': 1}), 'continuous')
+    assert chunk.actions[0] == ContinuousAction(forward=1.0, yaw=-1.0, altitude=1.0)

@@ -795,8 +795,13 @@ question and what the camera sees:
 ```bash
 uv sync --extra sim --extra camera --extra vlm
 uv run --extra sim --extra vlm drones-render-agent --benchmark hm-eqa --question 1 \
-    --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16
+    --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48
 ```
+
+`--steps 48` is three seconds of flight, three model calls. Without it the agent flies 500 steps,
+which is 32 calls: about half an hour of discrete actions on this laptop and nearly two hours of
+continuous ones (see [Measured here](#measured-here-1)). Each call is reported on stderr as it
+returns, with how long it took and whether the reply was valid.
 
 Once per simulated second the model is shown the current frame, the question, its altitude and the
 time flown. It replies with JSON: 16 actions, a completion flag and an answer. The reply is
@@ -833,8 +838,15 @@ What happens to a bad reply:
 - Three such seconds in a row end the episode.
 
 Other `--agent-arg`s: `model=` (any Hugging Face image-text-to-text checkpoint; the default,
-`google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`), `start_altitude=`
-(how high the start pose is taken to be, 1.0 m) and `max_new_tokens=`.
+`google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`), `max_new_tokens=`
+and `start_altitude=`.
+
+The agent is given a start pose and no floor, so it takes the start to be `start_altitude` above
+the floor, 1.0 m by default. That matches the habitat benchmarks (`hm-eqa`, `mt-hm3d`,
+`express-bench`, `a-eqa`) and `--scene`, which start 1.0 m up. It does not match `indoor-uav`,
+whose starts are at the dataset's own flight height, or a run with `--eye-height`: pass the real
+height as `--agent-arg start_altitude=`. Otherwise the altitude the model is told and the 0.2 to
+2.0 m limits are both off by the difference.
 
 ### Measured here
 

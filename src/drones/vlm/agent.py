@@ -1,7 +1,7 @@
 """The VLM pilot as an agent for scanned scenes: drones-render-agent --agent drones.vlm.agent:make
 
     uv run --extra sim --extra vlm drones-render-agent --benchmark hm-eqa --question 1 \\
-        --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16
+        --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48
 
 The simulator's agent loop asks for the next pose once per step and renders a frame there. One
 step is one action, 1/16 s, so `--fps 16` plays the film in real time; the pilot looks at every
@@ -14,10 +14,17 @@ with. The mixer is not stepped here. It runs at 10 Hz, not 16, and its avoidance
 readings that a view of the scan alone does not produce.
 
 Altitude needs a floor, and the agent loop gives only a start pose. The start is taken to be
-`start_altitude` above the floor: 1.0 m, which is both where the benchmarks' start poses are
-lifted to (eqa.EYE_HEIGHT) and the take-off height.
+`start_altitude` above the floor. The default, 1.0 m, is the take-off height and where the habitat
+benchmarks' start poses are lifted to (eqa.EYE_HEIGHT). It is wrong for IndoorUAV, whose starts
+are at the dataset's own flight height, and after `--eye-height`: pass the real height as
+`--agent-arg start_altitude=`, or the altitude the model is told and the altitude limits are both
+off by the difference.
+
+Each model call is reported on stderr as it returns. A call takes a minute or more without a GPU,
+and drones-render-agent says nothing between loading the scene and writing the film.
 """
 import math
+import sys
 
 import numpy as np
 
@@ -27,6 +34,8 @@ from drones.sim.agents import Pose
 from drones.vlm.actions import STEP
 from drones.vlm.backend import DEFAULT_MODEL, TransformersBackend
 from drones.vlm.pilot import Pilot
+
+ERROR_SHOWN = 200   # characters of a validation error in a progress line
 
 
 def integrate(pose, altitude, command):
@@ -57,10 +66,28 @@ class VLMAgent:
     def act(self, observation):
         pose = observation.pose
         altitude = float(pose.pos[2]) - self._floor
-        command = self.pilot.step(observation.image, altitude)
+        pilot = self.pilot
+        stats, seconds = dict(pilot.stats), pilot.seconds
+        command = pilot.step(observation.image, altitude)
+        if pilot.stats != stats:
+            self._report(observation.step, stats, pilot.seconds - seconds, command is None)
         if command is None:
             return None
         return integrate(pose, altitude, command)
+
+    def _report(self, step, before, seconds, over):
+        """One stderr line for the chunk just asked for at `step`."""
+        pilot = self.pilot
+        # pydantic's errors run over several lines; one is enough here.
+        error = ' '.join(str(pilot.error).split())[:ERROR_SHOWN]
+        if pilot.stats['failed'] > before['failed']:
+            outcome = f'failed, {"stopping" if over else "hovering"}: {error}'
+        else:
+            outcome = 'valid after a retry' if pilot.stats['retry'] > before['retry'] else 'valid'
+            if over:
+                outcome += f', done, answer {pilot.answer!r}'
+        print(f'vlm: chunk {sum(pilot.stats.values())} at {step * STEP:.0f} s: {outcome} '
+              f'({seconds:.0f} s)', file=sys.stderr, flush=True)
 
     @property
     def answer(self):
