@@ -55,6 +55,7 @@ camera = [
 # Linux whether or not there is a GPU. Nothing else in the project needs it.
 vlm = [
     "accelerate>=1.0",
+    "lm-format-enforcer>=0.11.3",  # holds the model's reply to the chunk schema, token by token
     "pillow>=12.3",
     "timm>=1.0",  # Gemma 3n's vision tower loads through TimmWrapperModel
     "torch>=2.9",

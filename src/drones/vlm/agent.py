@@ -31,7 +31,7 @@ import numpy as np
 from drones import config
 from drones.control.mixer import clamp
 from drones.sim.agents import Pose
-from drones.vlm.actions import CHUNK, STEP, ContinuousAction
+from drones.vlm.actions import CHUNK, STEP, ContinuousAction, json_schema
 from drones.vlm.backend import DEFAULT_MODEL, TransformersBackend
 from drones.vlm.pilot import Pilot
 
@@ -140,8 +140,13 @@ class VLMAgent:
 
 
 def make(action_space='continuous', model=DEFAULT_MODEL, start_altitude=1.0,
-         max_new_tokens=None, backend=None):
-    """The agent factory. `backend` replaces the local model, for tests and other models."""
+         max_new_tokens=None, backend=None, constrain=True):
+    """The agent factory. The local model is held to the chunk's schema as it writes, unless
+    `constrain` is 0 (or false, no, off). `backend` replaces the local model, for tests and
+    other models."""
     if backend is None:
-        backend = TransformersBackend(model, max_new_tokens)
+        # --agent-arg gives 0 as a number and any other word as text.
+        free = str(constrain).lower() in ('0', 'false', 'no', 'off')
+        backend = TransformersBackend(model, max_new_tokens,
+                                      schema=None if free else json_schema(action_space))
     return VLMAgent(Pilot(backend, action_space), start_altitude)

@@ -310,3 +310,14 @@ def test_the_longest_caption_fits_the_films_panel():
     observation = agents.Observation(None, agents.Pose(np.zeros(3)), 0, None)
     lines = render_agent.caption(observation, '', 98, shown)
     assert sum(line.count('1.25') for line in lines) == CHUNK, 'actions are cut off'
+
+
+def test_make_holds_the_local_model_to_the_chunk_schema_unless_told_not_to():
+    from drones.vlm.actions import json_schema
+
+    assert vlm_agent.make().pilot.backend.schema == json_schema('continuous')
+    assert vlm_agent.make(action_space='discrete').pilot.backend.schema == json_schema('discrete')
+    assert vlm_agent.make(constrain=1).pilot.backend.schema is not None
+    # --agent-arg hands over 0 as a number and anything else as text.
+    for off in (0, False, 'false', 'no', 'off'):
+        assert vlm_agent.make(constrain=off).pilot.backend.schema is None

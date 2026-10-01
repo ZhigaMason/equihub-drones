@@ -855,6 +855,15 @@ uv run --extra sim --extra vlm drones-render-agent --scene Bowlus --ask 'Find th
     --agent drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48
 ```
 
+The local model's decoding is constrained to the chunk's schema ([lm-format-enforcer]): at every
+token it may only choose one that keeps the reply valid JSON of the right shape. It cannot write
+prose or a code fence around the JSON, an unknown move or key, or anything but exactly 16 actions,
+done or not; a done chunk's actions are simply not flown. The one thing the grammar cannot hold
+is a number's range, so a `forward` of 7.5 can still be written. `--agent-arg constrain=0` turns
+this off, to see what the model writes on its own.
+
+[lm-format-enforcer]: https://github.com/noamgat/lm-format-enforcer
+
 What happens to a bad reply:
 
 - A reply that is not valid JSON, has the wrong number of actions, a value out of range or an
@@ -862,9 +871,12 @@ What happens to a bad reply:
 - After a second bad reply the drone hovers for that second.
 - Three such seconds in a row end the episode.
 
+With constrained decoding, only a number out of range or a reply cut off at `max_new_tokens` gets
+this far.
+
 Other `--agent-arg`s: `model=` (any Hugging Face image-text-to-text checkpoint; the default,
-`google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`), `max_new_tokens=`
-and `start_altitude=`.
+`google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`, or set `HF_TOKEN`
+in `.env`), `max_new_tokens=`, `start_altitude=` and `constrain=`.
 
 The agent is given a start pose and no floor, so it takes the start to be `start_altitude` above
 the floor, 1.0 m by default. That matches the habitat benchmarks (`hm-eqa`, `mt-hm3d`,
@@ -897,9 +909,25 @@ format more than it reads the image.
 The prompt has been rewritten since, because of that. It now describes the action space (what each
 action does to the drone and to the picture, and what sixteen of one add up to), says how to
 choose from the image, and shows the reply format as a template with sixteen numbered slots
-instead of an example that could be sent straight back. **The new prompt has not been measured
-with a model yet**: whether the replies are still valid at once, and whether they now differ from
-frame to frame, is the next thing to find out.
+instead of an example that could be sent straight back.
+
+With that prompt, on a MetaCentrum A100, `Qwen/Qwen2.5-VL-3B-Instruct` (ungated; Gemma was not
+available there) was asked for one chunk on each of five different views of Bowlus, with the task
+"Fly to the fireplace.":
+
+| Action space | Valid chunks, free decoding | Valid chunks, constrained | Seconds per call, constrained |
+| --- | --- | --- | --- |
+| `discrete` | 0 of 5 | 5 of 5 | 2.3 (4.2 for the first) |
+| `continuous` | 5 of 5 | 5 of 5 | 10 (8.6 free) |
+
+Decoding freely, Qwen wrote 17 discrete actions every time, so every reply was rejected: the
+`ValueError` this section's first version showed is what made constrained decoding the default. The
+first constrained call is slower because it indexes the tokenizer's vocabulary once.
+
+The format is solved; the flying is not. Constrained or not, each mode gave the same chunk for all
+five views: sixteen `forward` in discrete mode, sixteen full-speed left turns in continuous mode.
+In three of the five, Qwen also set `done` on the very first frame, with "forward" or "success" as
+its answer. Gemma 3n with the new prompt is still unmeasured.
 
 Limits to know about: the model sees one frame and remembers nothing, so it can circle; nothing
 collides with the scan, so it can fly through walls; and it flies only in the simulator. The pilot

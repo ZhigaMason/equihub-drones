@@ -18,17 +18,19 @@ from drones.vlm.actions import CHUNK, MOVES, STEP, schema_for
 ROLE = ('You are the pilot of a small indoor drone. The image is the view from its forward '
         'camera right now.')
 EXPLORE = 'There is no question. Your task: explore the space without flying into anything.'
-DONE = '{"actions": [], "done": true, "answer": ANSWER}'
 # Characters of a rejected reply and of its error shown on a retry. A reply can run to the token
 # limit and pydantic reports every bad action, so both are cut.
 REPLY_SHOWN = 1000
 ERROR_SHOWN = 500
 
 
-def template(slot):
-    """The reply format, with `slot`1 .. `slot`16 where the actions go. Not valid JSON."""
+def template(slot, done=False):
+    """The reply format, with `slot`1 .. `slot`16 where the actions go. Not valid JSON. A done
+    reply has the same sixteen slots: one shape is easier to keep to, and a model whose decoding
+    is held to the schema can write no other (see actions.json_schema)."""
     slots = ', '.join(f'{slot}{i}' for i in range(1, CHUNK + 1))
-    return '{"actions": [' + slots + '], "done": false, "answer": null}'
+    ending = '"done": true, "answer": ANSWER' if done else '"done": false, "answer": null'
+    return '{"actions": [' + slots + '], ' + ending + '}'
 
 
 def _action_space(space):
@@ -95,8 +97,9 @@ def _reply(space, question, choices):
              f'with each of {slot}1 to {slot}{CHUNK} replaced by {what}. There are exactly '
              f'{CHUNK}.',
              'When the task is complete, reply like this instead:',
-             DONE,
-             'with ANSWER replaced by your answer in double quotes.']
+             template(slot, done=True),
+             'with ANSWER replaced by your answer in double quotes. Those actions are not flown, '
+             f'so any {CHUNK} will do.']
     if question and choices:
         lines.append('Your answer is the letter of your choice.')
     return lines

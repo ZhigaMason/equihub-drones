@@ -159,6 +159,15 @@ frame guess against walls, not floors. HM3D's
   reads as triton not being installed, and logs "triton not found" for. Anything else that loads
   torch beside the simulator's renderer needs the same. Find such a crash with
   `python -X faulthandler`.
+- **lm-format-enforcer 0.11.3 (the VLM pilot's constrained decoding) has three traps.** Its
+  transformers integration module cannot be imported under transformers 5 (it imports
+  `PreTrainedTokenizerBase` from `transformers.tokenization_utils`, which no longer exists), so
+  `vlm/backend.py:_vocabulary` does that module's small job with the library's core. A JSON
+  schema `const` that is not a string (`"done": false`) crashes its parser. And `maxItems: 0`
+  admits one item. That is why `vlm/actions.py:json_schema` always asks for exactly `CHUNK`
+  actions, done or not, and why the range of a number stays with pydantic alone. Check a
+  grammar change character by character, as `tests/test_vlm_constrained.py` does; the library's
+  own errors are rarely clear.
 - **transformers' image-text-to-text pipeline takes generation options only in
   `generate_kwargs`.** Any other keyword goes to the processor and is dropped with a warning, so
   `do_sample=False` passed directly still samples, as Gemma's own generation config says to.
@@ -216,8 +225,11 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   update the action-space description in `vlm/prompt.py` with them. The prompt shows the reply
   format as a template with numbered slots, never as a finished chunk: given one complete
   example, Gemma 3n E2B returned that example for every frame. `tests/test_vlm_prompt.py` fails
-  if any line of the prompt would pass as a reply. Another model or a server is a new
-  `Backend` (`generate(prompt, image) -> str`), not a change to `Pilot`. A real-drone adapter
+  if any line of the prompt would pass as a reply. The local model's decoding is held to
+  `actions.json_schema` (the pydantic schema with the count pinned) unless `constrain=0`; the
+  pilot still validates every reply, because the grammar cannot hold a number's range. Another
+  model or a server is a new `Backend` (`generate(prompt, image) -> str`), not a change to
+  `Pilot`. A real-drone adapter
   would call `Pilot.step` and pass each Command to `DroneController.set_control`; none exists yet,
   and writing one does not make it something an agent may run. The size of one action comes from
   `drones.config`, so a local `.env` changes how far the simulated drone moves per action and what

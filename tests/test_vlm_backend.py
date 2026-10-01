@@ -96,3 +96,13 @@ def test_loading_keeps_triton_out_and_asks_for_the_model_on_the_cpu(monkeypatch)
     assert triton is None                      # `import triton` now raises ImportError
     assert task == 'image-text-to-text'
     assert kwargs == {'model': 'some/model', 'device': 'cpu', 'dtype': 'float32'}
+
+
+def test_without_lm_format_enforcer_a_schema_says_how_to_install_it(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'lmformatenforcer', None)
+    pipe = StubPipe()
+    pipe.tokenizer = object()
+    with pytest.raises(SystemExit, match='--extra vlm') as stopped:
+        TransformersBackend(pipe=pipe, schema={'type': 'object'}).generate('fly', frame())
+    # The cause too: an import can fail for reasons other than a missing extra.
+    assert 'lmformatenforcer' in str(stopped.value)

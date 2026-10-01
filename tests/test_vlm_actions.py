@@ -161,3 +161,27 @@ def test_done_must_be_a_boolean(done):
 def test_whole_numbers_are_still_numbers():
     chunk = parse_chunk(continuous(action={'forward': 1, 'yaw': -1, 'altitude': 1}), 'continuous')
     assert chunk.actions[0] == ContinuousAction(forward=1.0, yaw=-1.0, altitude=1.0)
+
+
+@pytest.mark.parametrize('space', ['continuous', 'discrete'])
+def test_the_grammar_is_the_pydantic_schema_with_the_count_pinned(space):
+    from drones.vlm.actions import ANSWER_MAX, SCHEMAS, json_schema
+
+    own = SCHEMAS[space].model_json_schema()
+    grammar = json_schema(space)
+    actions = grammar['properties']['actions']
+    assert (actions['type'], actions['minItems'], actions['maxItems']) == ('array', CHUNK, CHUNK)
+    assert actions['items'] == own['properties']['actions']['items']
+    assert grammar['required'] == ['actions', 'done', 'answer']
+    assert grammar['additionalProperties'] is False
+    assert {'type': 'string', 'maxLength': ANSWER_MAX} in grammar['properties']['answer']['anyOf']
+    assert grammar.get('$defs') == own.get('$defs')
+    # The model's own schema is not what got edited.
+    assert 'minItems' not in SCHEMAS[space].model_json_schema()['properties']['actions']
+
+
+def test_the_grammar_of_an_unknown_action_space_names_the_valid_ones():
+    from drones.vlm.actions import json_schema
+
+    with pytest.raises(ValueError, match='continuous, discrete'):
+        json_schema('categorical')

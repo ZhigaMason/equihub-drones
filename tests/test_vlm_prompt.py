@@ -20,7 +20,10 @@ def test_the_template_has_a_slot_for_each_of_the_sixteen_actions(space, slot):
     prompt = build_prompt(space, 'Find the sofa.')
     slots = ', '.join(f'{slot}{i}' for i in range(1, CHUNK + 1))
     assert '{"actions": [' + slots + '], "done": false, "answer": null}' in prompt
-    assert '"done": true' in prompt
+    # Done is the same sixteen slots with the flag set: one shape, which a constrained model
+    # can also write.
+    assert '{"actions": [' + slots + '], "done": true, "answer": ANSWER}' in prompt
+    assert 'not flown' in prompt
 
 
 def test_the_question_choices_and_state_are_in_the_prompt():

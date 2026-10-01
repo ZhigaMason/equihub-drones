@@ -18,6 +18,7 @@ from drones.control.mixer import Command
 
 CHUNK = 16          # actions per chunk: one model call covers one second
 STEP = 1 / CHUNK    # s each action lasts
+ANSWER_MAX = 300    # characters of an answer a constrained model may write
 
 Move = Literal['forward', 'backward', 'turn_left', 'turn_right', 'rise', 'descend', 'hover']
 MOVES = get_args(Move)
@@ -71,6 +72,32 @@ def schema_for(space):
     if space not in SCHEMAS:
         raise ValueError(f'action space {space!r} is not one of {", ".join(SPACES)}')
     return SCHEMAS[space]
+
+
+def json_schema(space):
+    """The JSON schema of a chunk in action space `space`, for a backend that can hold a model
+    to one while it writes (constrained decoding).
+
+    It is the pydantic model's own schema, narrowed to what lm-format-enforcer can hold a model
+    to exactly. `actions` has exactly CHUNK items, so a model cannot stop at fifteen; that
+    includes a done chunk, whose actions are then not flown. (The schema also allows a done
+    chunk fewer, but "CHUNK, or none" cannot be stated: the enforcer's `maxItems` of 0 admits
+    one item, and a `const` of false for `done` crashes it.) Every key is required, so none is
+    left to a default, and an answer has a length, or a model that never closes the string
+    writes to the token limit.
+
+    One rule stays with `parse_chunk` alone: forward and yaw lie between -1 and 1. The enforcer
+    ignores minimum and maximum.
+    """
+    schema = schema_for(space).model_json_schema()      # a fresh dict each call
+    items = schema['properties']['actions']['items']
+    schema['properties']['actions'] = {'type': 'array', 'items': items,
+                                       'minItems': CHUNK, 'maxItems': CHUNK}
+    schema['properties']['answer'] = {'anyOf': [{'type': 'string', 'maxLength': ANSWER_MAX},
+                                                {'type': 'null'}]}
+    # Also the order the keys are written in, which the backend enforces.
+    schema['required'] = ['actions', 'done', 'answer']
+    return schema
 
 
 def parse_chunk(text, space):

@@ -494,6 +494,7 @@ sim = [
 ]
 vlm = [
     { name = "accelerate" },
+    { name = "lm-format-enforcer" },
     { name = "pillow" },
     { name = "timm" },
     { name = "torch" },
@@ -516,6 +517,7 @@ requires-dist = [
     { name = "imageio", marker = "extra == 'sim'", specifier = ">=2.37" },
     { name = "imageio-ffmpeg", marker = "extra == 'sim'", specifier = ">=0.6" },
     { name = "jax", extras = ["cuda12"], marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.11.1" },
+    { name = "lm-format-enforcer", marker = "extra == 'vlm'", specifier = ">=0.11.3" },
     { name = "modelscope", marker = "extra == 'sim'", specifier = ">=1.40.1" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "opencv-python", marker = "extra == 'camera'", specifier = ">=5.0.0.93" },
@@ -853,6 +855,15 @@ wheels = [
 ]
 
 [[package]]
+name = "interegular"
+version = "0.3.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/9d/8b6dde58a028a3962ce17e84d5fe73758df61378e00ef8ac3d85da34b0ff/interegular-0.3.3.tar.gz", hash = "sha256:d9b697b21b34884711399ba0f0376914b81899ce670032486d0d048344a76600", size = 24705, upload-time = "2024-01-06T23:01:22.372Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/01/72d6472f80651673716d1deda2a5bbb633e563ecf94f4479da5519d69d25/interegular-0.3.3-py37-none-any.whl", hash = "sha256:b0c07007d48c89d6d19f7204972d369b2a77222722e126b6aa63aa721dc3b19c", size = 23635, upload-time = "2024-01-06T23:01:20.829Z" },
+]
+
+[[package]]
 name = "jax"
 version = "0.11.1"
 source = { registry = "https://pypi.org/simple" }
@@ -971,6 +982,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/03/264cefc51275ecb047194c4973bc40b3b278566a64bbe6e74f86bf1e0afc/libusb_package-1.0.30.0-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:2ee5ef8ac6f08402b4e8334f7404850316bdd26037c9a97f2a7456ee9a5d1550", size = 76676, upload-time = "2026-06-30T07:41:07.505Z" },
     { url = "https://files.pythonhosted.org/packages/e5/95/d166eeefe0d9dd5833d5724a97b023ec380c3a2d364040ec0485fd57703c/libusb_package-1.0.30.0-py3-none-win32.whl", hash = "sha256:79728146e1f01e525786900b2ccd8298a8eca53cd94b37fb0885e56aa6f9d60a", size = 78769, upload-time = "2026-06-30T07:41:08.432Z" },
     { url = "https://files.pythonhosted.org/packages/60/4a/ff49bd77f33af05ca26fee29d601beb1e19ca791bb86efece82a3833885c/libusb_package-1.0.30.0-py3-none-win_amd64.whl", hash = "sha256:90808da724c8939a333d931d0c7226372ca5fefd98e2f2f3ef79fd918aa37522", size = 90711, upload-time = "2026-06-30T07:41:09.318Z" },
+]
+
+[[package]]
+name = "lm-format-enforcer"
+version = "0.11.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "interegular" },
+    { name = "packaging" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/84/d5/41cd417ba7dfdbbcfe46cebf81fb3dfd7c591b89897560ad05bb410a465d/lm_format_enforcer-0.11.3.tar.gz", hash = "sha256:e68081c108719cce284a9bcc889709b26ffb085a1945b5eba3a12cfa96d528da", size = 40258, upload-time = "2025-08-24T19:37:47.527Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/ef/11292bb0b85cf4c93447cab5a29f64576ed14d3ab4280e35ddd23486594a/lm_format_enforcer-0.11.3-py3-none-any.whl", hash = "sha256:cf586350875def1ae7a8fba84fcbbfc8371424b6c9d05c1fcba70aa233fbf06f", size = 45418, upload-time = "2025-08-24T19:37:46.325Z" },
 ]
 
 [[package]]
