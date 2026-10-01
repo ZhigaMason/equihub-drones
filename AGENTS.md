@@ -164,8 +164,8 @@ frame guess against walls, not floors. HM3D's
   `PreTrainedTokenizerBase` from `transformers.tokenization_utils`, which no longer exists), so
   `vlm/backend.py:_vocabulary` does that module's small job with the library's core. A JSON
   schema `const` that is not a string (`"done": false`) crashes its parser. And `maxItems: 0`
-  admits one item. That is why `vlm/actions.py:json_schema` always asks for exactly `CHUNK`
-  actions, done or not, and why the range of a number stays with pydantic alone. Check a
+  admits one item. That is why `vlm/actions.py:json_schema` always asks for exactly the chunk's
+  size in actions, done or not, and why the range of a number stays with pydantic alone. Check a
   grammar change character by character, as `tests/test_vlm_constrained.py` does; the library's
   own errors are rarely clear.
 - **transformers' image-text-to-text pipeline takes generation options only in
@@ -311,7 +311,11 @@ The VLM pilot has no entry point of its own: it is `drones-render-agent --agent
 drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48`. One step is 1/16 s,
 so 16 fps is real time. A run loads a local model (`google/gemma-3n-E2B-it`, gated) and is slow
 without a GPU: about a minute per model call, one call per 16 steps, so always pass `--steps` (the
-default 500 is half an hour or more). The tests script the replies instead and load nothing. The
+default 500 is half an hour or more). `--agent-arg chunk=N` (1 to 32) sets the actions per call;
+an action is always 1/16 s (`actions.STEP`), so N is how long the model flies open loop, not how
+fast. `CHUNK` is only the default size: pass the size through (`parse_chunk`, `json_schema`,
+`build_prompt`, `Pilot(size=)`) rather than reading `CHUNK`. The tests script the replies
+instead and load nothing. The
 agent assumes its start is `start_altitude` (1.0 m) above the floor, which is wrong for
 `indoor-uav` and after `--eye-height`; pass the real height. With `--scene`, `--ask TEXT` gives
 the agent a question of your own. The film's panel under the question holds `AGENT_LINES` lines

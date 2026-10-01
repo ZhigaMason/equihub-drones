@@ -24,26 +24,29 @@ REPLY_SHOWN = 1000
 ERROR_SHOWN = 500
 
 
-def template(slot, done=False):
-    """The reply format, with `slot`1 .. `slot`16 where the actions go. Not valid JSON. A done
-    reply has the same sixteen slots: one shape is easier to keep to, and a model whose decoding
-    is held to the schema can write no other (see actions.json_schema)."""
-    slots = ', '.join(f'{slot}{i}' for i in range(1, CHUNK + 1))
+def template(slot, done=False, size=CHUNK):
+    """The reply format, with `slot`1 .. `slot``size` where the actions go. Not valid JSON. A
+    done reply has the same slots: one shape is easier to keep to, and a model whose decoding is
+    held to the schema can write no other (see actions.json_schema)."""
+    slots = ', '.join(f'{slot}{i}' for i in range(1, size + 1))
     ending = '"done": true, "answer": ANSWER' if done else '"done": false, "answer": null'
     return '{"actions": [' + slots + '], ' + ending + '}'
 
 
-def _action_space(space):
-    """What the actions of `space` are and do, sized from the flight limits."""
+def _action_space(space, size):
+    """What the actions of `space` are and do, sized from the flight limits, and what `size`
+    of them add up to."""
     ahead = config.MAX_MANUAL_SPEED * STEP * 100    # cm per action at full scale
     turn = config.MAX_YAW_RATE * STEP               # degrees
     climb = config.MAX_CLIMB_SPEED * STEP * 100     # cm
-    far, around = ahead * CHUNK, turn * CHUNK       # a whole chunk of one action
-    chunk = (f'You give {CHUNK} at a time. They are flown in order over the next second, and '
+    far, around = ahead * size, turn * size         # a whole chunk of one action
+    seconds = size * STEP
+    over = 'second' if seconds == 1 else f'{seconds:g} seconds'
+    each = f'1/{round(1 / STEP)} of a second'
+    chunk = (f'You give {size} at a time. They are flown in order over the next {over}, and '
              'then you are shown the new view.')
     if space == 'discrete':
-        return [f'ACTION SPACE. You fly with {len(MOVES)} moves. Each lasts 1/{CHUNK} of a '
-                'second:',
+        return [f'ACTION SPACE. You fly with {len(MOVES)} moves. Each lasts {each}:',
                 f'- "forward": fly {ahead:.1f} cm towards the centre of the image.',
                 f'- "backward": fly {ahead:.1f} cm away from it.',
                 f'- "turn_left": rotate {turn:.1f} degrees to the left. What is on the left of '
@@ -53,11 +56,11 @@ def _action_space(space):
                 f'- "rise": climb {climb:.1f} cm.',
                 f'- "descend": sink {climb:.1f} cm.',
                 '- "hover": stay still.',
-                f'{chunk} Repeat a move to do more of it: {CHUNK} times "forward" is '
-                f'{far:.0f} cm ahead, {CHUNK} times "turn_left" is {around:.0f} degrees to the '
+                f'{chunk} Repeat a move to do more of it: {size} times "forward" is '
+                f'{far:.0f} cm ahead, {size} times "turn_left" is {around:.0f} degrees to the '
                 'left.']
     return ['ACTION SPACE. You fly with actions of the form {"forward": F, "yaw": Y, '
-            f'"altitude": H}}. Each lasts 1/{CHUNK} of a second:',
+            f'"altitude": H}}. Each lasts {each}:',
             f'- F is a number from -1 to 1, the speed along the view. 1 flies {ahead:.1f} cm '
             'towards the centre of the image, -1 the same distance away from it, 0 stays in '
             'place, 0.5 is half of 1.',
@@ -68,8 +71,8 @@ def _action_space(space):
             f'{config.MAX_ALTITUDE:g} m, or null to stay at this height. One action climbs or '
             f'sinks at most {climb:.1f} cm.',
             'F and Y act together: F 1 with Y 0.5 flies a curve to the left.',
-            f'{chunk} Repeat an action to do more of it: {CHUNK} times F 1 is {far:.0f} cm '
-            f'ahead, {CHUNK} times Y 1 is {around:.0f} degrees to the left.']
+            f'{chunk} Repeat an action to do more of it: {size} times F 1 is {far:.0f} cm '
+            f'ahead, {size} times Y 1 is {around:.0f} degrees to the left.']
 
 
 def _how_to_choose(question):
@@ -87,27 +90,27 @@ def _how_to_choose(question):
             'image. Turn towards the open side first.']
 
 
-def _reply(space, question, choices):
+def _reply(space, question, choices, size):
     if space == 'discrete':
         slot, what = 'm', f'one of the {len(MOVES)} moves, in double quotes'
     else:
         slot, what = 'a', 'an action {"forward": F, "yaw": Y, "altitude": H} with your numbers'
     lines = ['REPLY. One JSON object and nothing else:',
-             template(slot),
-             f'with each of {slot}1 to {slot}{CHUNK} replaced by {what}. There are exactly '
-             f'{CHUNK}.',
+             template(slot, size=size),
+             f'with each of {slot}1 to {slot}{size} replaced by {what}. There are exactly '
+             f'{size}.',
              'When the task is complete, reply like this instead:',
-             template(slot, done=True),
+             template(slot, done=True, size=size),
              'with ANSWER replaced by your answer in double quotes. Those actions are not flown, '
-             f'so any {CHUNK} will do.']
+             f'so any {size} will do.']
     if question and choices:
         lines.append('Your answer is the letter of your choice.')
     return lines
 
 
-def build_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0):
-    """The prompt for one chunk: `question` (None to explore) with its multiple `choices`, the
-    drone `altitude` m above the floor, `elapsed` s into the episode."""
+def build_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0, size=CHUNK):
+    """The prompt for one chunk of `size` actions: `question` (None to explore) with its
+    multiple `choices`, the drone `altitude` m above the floor, `elapsed` s into the episode."""
     schema_for(space)
     lines = [ROLE, '']
     if question:
@@ -119,11 +122,11 @@ def build_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0):
     lines += ['',
               f'The drone is {altitude:.2f} m above the floor and has flown for {elapsed:.0f} s.',
               '',
-              *_action_space(space),
+              *_action_space(space, size),
               '',
               *_how_to_choose(question),
               '',
-              *_reply(space, question, choices)]
+              *_reply(space, question, choices, size)]
     return '\n'.join(lines)
 
 

@@ -17,7 +17,7 @@ import logging
 import time
 from collections import deque
 
-from drones.vlm.actions import CHUNK, STEP, parse_chunk, schema_for, to_command
+from drones.vlm.actions import CHUNK, STEP, chunk_size, parse_chunk, schema_for, to_command
 from drones.vlm.prompt import build_prompt, retry_prompt
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,15 @@ MAX_FAILURES = 3    # failed chunks in a row before the episode ends
 
 
 class Pilot:
-    """Flies by asking `backend` (anything with generate(prompt, image) -> str) for chunks in
-    action space `space`. After an episode, `answer` is the model's reply to the question and
-    `error` why the last chunk failed, if it did."""
+    """Flies by asking `backend` (anything with generate(prompt, image) -> str) for chunks of
+    `size` actions in action space `space`. A larger chunk is a longer stretch flown open loop:
+    each action lasts STEP whatever the size, so the model looks every `size` steps. After an
+    episode, `answer` is the model's reply to the question and `error` why the last chunk failed,
+    if it did."""
 
-    def __init__(self, backend, space='continuous', max_failures=MAX_FAILURES):
-        schema_for(space)       # an unknown space fails here, not at the first frame
+    def __init__(self, backend, space='continuous', max_failures=MAX_FAILURES, size=CHUNK):
+        schema_for(space)       # an unknown space or size fails here, not at the first frame
+        self.size = chunk_size(size)
         self.backend, self.space, self.max_failures = backend, space, int(max_failures)
         self.reset()
 
@@ -66,7 +69,7 @@ class Pilot:
     def _plan(self, image, altitude):
         """Queue the next chunk's actions. False when the episode ends instead."""
         prompt = build_prompt(self.space, self.question, self.choices, altitude,
-                              self._steps * STEP)
+                              self._steps * STEP, self.size)
         chunk = self._ask(prompt, image)
         self.chunk, self.played, self.asked_at = chunk, 0, self._steps * STEP
         if chunk is None:
@@ -75,7 +78,7 @@ class Pilot:
             if self._failures >= self.max_failures:
                 logger.warning('%d chunks in a row failed; stopping', self._failures)
                 return False
-            self._actions.extend(['hover'] * CHUNK)
+            self._actions.extend(['hover'] * self.size)
             return True
         self._failures = 0
         self.error = None
@@ -95,7 +98,7 @@ class Pilot:
             self.seconds += time.perf_counter() - started
             self.queries += 1
             try:
-                chunk = parse_chunk(reply, self.space)
+                chunk = parse_chunk(reply, self.space, self.size)
             except ValueError as exc:
                 self.error = str(exc)
                 logger.warning('reply %d rejected: %s', self.queries, self.error)

@@ -808,6 +808,13 @@ time flown. It replies with JSON: 16 actions, a completion flag and an answer. T
 validated with pydantic before any of it is flown, and the 16 actions are then played back at
 16 Hz. The simulator waits for the model, so this works however slow the model is.
 
+The chunk size is how long the model flies open loop. `--agent-arg chunk=N` asks for N actions per
+reply, from 1 to 32. Each action still lasts 1/16 s, so `chunk=32` flies two seconds between looks
+and `chunk=8` half a second; `--fps 16` stays real time. The prompt, the schema and the
+constrained decoding all follow N, and so does the default `max_new_tokens` (768 up to 16
+actions, twice that at 32), or a long reply would be cut off and rejected. A film shows chunks of more than 16 folded into runs
+(`forward x20 [turn_left x12]`, with "action 26 of 32"), so the panel keeps its size.
+
 There are two action spaces, chosen with `--agent-arg action_space=`:
 
 ```json
@@ -876,7 +883,7 @@ this far.
 
 Other `--agent-arg`s: `model=` (any Hugging Face image-text-to-text checkpoint; the default,
 `google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`, or set `HF_TOKEN`
-in `.env`), `max_new_tokens=`, `start_altitude=` and `constrain=`.
+in `.env`), `max_new_tokens=`, `start_altitude=`, `constrain=` and `chunk=`.
 
 The agent is given a start pose and no floor, so it takes the start to be `start_altitude` above
 the floor, 1.0 m by default. That matches the habitat benchmarks (`hm-eqa`, `mt-hm3d`,

@@ -185,3 +185,36 @@ def test_the_grammar_of_an_unknown_action_space_names_the_valid_ones():
 
     with pytest.raises(ValueError, match='continuous, discrete'):
         json_schema('categorical')
+
+
+def test_a_chunk_of_another_size_validates_against_that_size():
+    assert len(parse_chunk(discrete(8), 'discrete', size=8).actions) == 8
+    with pytest.raises(ValidationError, match='exactly 8'):
+        parse_chunk(discrete(), 'discrete', size=8)
+    assert len(parse_chunk(discrete(32), 'discrete', size=32).actions) == 32
+    assert parse_chunk(discrete(3, done=True), 'discrete', size=8).done
+    with pytest.raises(ValidationError, match='at most 8'):
+        parse_chunk(discrete(9, done=True), 'discrete', size=8)
+
+
+@pytest.mark.parametrize('size', [1, 8, 32])
+def test_the_grammar_pins_the_count_to_the_chunk_size(size):
+    from drones.vlm.actions import json_schema
+
+    actions = json_schema('continuous', size)['properties']['actions']
+    assert (actions['minItems'], actions['maxItems']) == (size, size)
+
+
+@pytest.mark.parametrize('given, size', [(1, 1), (16, 16), (32, 32), ('8', 8), (8.0, 8)])
+def test_a_chunk_size_is_a_whole_number_from_one_to_thirty_two(given, size):
+    from drones.vlm.actions import chunk_size
+
+    assert chunk_size(given) == size
+
+
+@pytest.mark.parametrize('given', [0, 33, -4, 8.5, 'many', None, True, 'inf', '1e400', 'nan'])
+def test_any_other_chunk_size_is_a_value_error_naming_the_range(given):
+    from drones.vlm.actions import chunk_size
+
+    with pytest.raises(ValueError, match='1 to 32'):
+        chunk_size(given)

@@ -11,13 +11,14 @@ the teleop safety layer already takes on the real drone.
 """
 from typing import Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from drones import config
 from drones.control.mixer import Command
 
-CHUNK = 16          # actions per chunk: one model call covers one second
-STEP = 1 / CHUNK    # s each action lasts
+CHUNK = 16          # actions per chunk by default: one model call covers one second
+MAX_CHUNK = 32      # the most a chunk may hold: two seconds flown without looking
+STEP = 1 / 16       # s each action lasts, whatever the chunk size: the simulator's step
 ANSWER_MAX = 300    # characters of an answer a constrained model may write
 
 Move = Literal['forward', 'backward', 'turn_left', 'turn_right', 'rise', 'descend', 'hover']
@@ -46,12 +47,14 @@ class _Chunk(_Strict):
     answer: str | None = None   # the reply to the question, usually given with `done`
 
     @model_validator(mode='after')
-    def _count(self):
+    def _count(self, info: ValidationInfo):
+        # The size comes with each validation (parse_chunk's `size`), so one model serves all.
+        size = (info.context or {}).get('size', CHUNK)
         n = len(self.actions)
-        if self.done and n > CHUNK:
-            raise ValueError(f'a done chunk has at most {CHUNK} actions, not {n}')
-        if not self.done and n != CHUNK:
-            raise ValueError(f'a chunk has exactly {CHUNK} actions, not {n}')
+        if self.done and n > size:
+            raise ValueError(f'a done chunk has at most {size} actions, not {n}')
+        if not self.done and n != size:
+            raise ValueError(f'a chunk has exactly {size} actions, not {n}')
         return self
 
 
@@ -74,14 +77,31 @@ def schema_for(space):
     return SCHEMAS[space]
 
 
-def json_schema(space):
+def chunk_size(value):
+    """`value` (a number, or a number as text, as --agent-arg gives it) as a chunk size: a whole
+    number from 1 to MAX_CHUNK. More would be a plan longer than the film's panel can show and
+    than a small model can keep straight."""
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        size = float(value)
+        if size != int(size):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):     # OverflowError: 'inf'
+        size = 0
+    if not 1 <= size <= MAX_CHUNK:
+        raise ValueError(f'a chunk size is a whole number from 1 to {MAX_CHUNK}, not {value!r}')
+    return int(size)
+
+
+def json_schema(space, size=CHUNK):
     """The JSON schema of a chunk in action space `space`, for a backend that can hold a model
     to one while it writes (constrained decoding).
 
     It is the pydantic model's own schema, narrowed to what lm-format-enforcer can hold a model
-    to exactly. `actions` has exactly CHUNK items, so a model cannot stop at fifteen; that
+    to exactly. `actions` has exactly `size` items, so a model cannot stop one short; that
     includes a done chunk, whose actions are then not flown. (The schema also allows a done
-    chunk fewer, but "CHUNK, or none" cannot be stated: the enforcer's `maxItems` of 0 admits
+    chunk fewer, but "`size`, or none" cannot be stated: the enforcer's `maxItems` of 0 admits
     one item, and a `const` of false for `done` crashes it.) Every key is required, so none is
     left to a default, and an answer has a length, or a model that never closes the string
     writes to the token limit.
@@ -92,7 +112,7 @@ def json_schema(space):
     schema = schema_for(space).model_json_schema()      # a fresh dict each call
     items = schema['properties']['actions']['items']
     schema['properties']['actions'] = {'type': 'array', 'items': items,
-                                       'minItems': CHUNK, 'maxItems': CHUNK}
+                                       'minItems': size, 'maxItems': size}
     schema['properties']['answer'] = {'anyOf': [{'type': 'string', 'maxLength': ANSWER_MAX},
                                                 {'type': 'null'}]}
     # Also the order the keys are written in, which the backend enforces.
@@ -100,16 +120,16 @@ def json_schema(space):
     return schema
 
 
-def parse_chunk(text, space):
-    """The validated chunk in a model's reply `text`. Raises ValueError (pydantic's
-    ValidationError is one) when there is no JSON object or it does not fit the schema."""
+def parse_chunk(text, space, size=CHUNK):
+    """The validated chunk of `size` actions in a model's reply `text`. Raises ValueError
+    (pydantic's ValidationError is one) when there is no JSON object or it does not fit."""
     schema = schema_for(space)
     # From the first brace to the last, so a fenced or prefaced reply still parses. A reply cut
     # off at the token limit then fails as invalid JSON, which is what it is.
     start, end = text.find('{'), text.rfind('}')
     if start < 0 or end < start:
         raise ValueError('the reply holds no JSON object')
-    return schema.model_validate_json(text[start:end + 1])
+    return schema.model_validate_json(text[start:end + 1], context={'size': size})
 
 
 def to_command(action, altitude):

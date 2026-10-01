@@ -90,3 +90,30 @@ def test_a_retry_shows_the_rejected_reply_and_the_error_at_bounded_length():
     # A runaway reply or a 16-line pydantic error must not double the next prompt.
     long = retry_prompt(prompt, 'x' * 100_000, 'e' * 100_000)
     assert len(long) < len(prompt) + 2_500
+
+
+def test_the_prompt_asks_for_the_chunk_size_it_is_given():
+    from drones.vlm.prompt import template
+
+    prompt = build_prompt('discrete', 'Find the sofa.', size=8)
+    slots = ', '.join(f'm{i}' for i in range(1, 9))
+    assert template('m', size=8) in prompt
+    assert '{"actions": [' + slots + '], "done": false' in prompt
+    assert 'm9' not in prompt
+    assert 'There are exactly 8.' in prompt
+    # An action still lasts 1/16 s, so 8 of them are half a second and half the distance.
+    assert '1/16 of a second' in prompt
+    assert 'over the next 0.5 seconds' in prompt
+    assert '8 times "forward" is 20 cm ahead' in prompt
+    assert '8 times "turn_left" is 45 degrees' in prompt
+    long = build_prompt('continuous', 'Find the sofa.', size=32)
+    assert 'over the next 2 seconds' in long and '32 times F 1 is 80 cm' in long
+    assert 'over the next second' in build_prompt('discrete', 'Find the sofa.')
+
+
+def test_nothing_in_a_prompt_of_another_size_would_pass_as_a_reply():
+    for size in (1, 8, 32):
+        for space in SPACES:
+            for line in build_prompt(space, 'Find the sofa.', size=size).splitlines():
+                with pytest.raises(ValueError):
+                    parse_chunk(line, space, size=size)

@@ -178,3 +178,29 @@ def test_the_chunk_being_flown_and_the_place_in_it_are_kept():
     assert pilot.chunk.done and (pilot.played, pilot.asked_at) == (0, 2.0)
     pilot.reset()
     assert (pilot.chunk, pilot.played, pilot.asked_at) == (None, 0, 0.0)
+
+
+def test_a_pilot_of_another_chunk_size_asks_that_often_and_hovers_that_long():
+    eight = json.dumps({'actions': ['forward'] * 8})
+    backend = FakeBackend(eight, BAD, BAD, DONE)
+    pilot = Pilot(backend, 'discrete', size=8)
+    pilot.reset('Find the sofa.')
+    commands = fly(pilot, 17)
+    assert commands[:8] == [Command(forward=1.0)] * 8
+    assert commands[8:16] == [Command()] * 8                 # a failed chunk: 8 steps of hover
+    assert commands[16] is None
+    assert [image for _, image in backend.calls] == [0, 8, 8, 16]
+    assert 'There are exactly 8.' in backend.calls[0][0]
+    assert 'flown for 0 s' in backend.calls[0][0] and 'flown for 1 s' in backend.calls[3][0]
+
+
+def test_a_reply_of_the_default_size_is_wrong_for_another():
+    pilot = Pilot(FakeBackend(FORWARD, FORWARD), 'discrete', size=8)
+    pilot.reset('Find the sofa.')
+    assert pilot.step(0, 1.0) == Command()                   # rejected twice: hover
+    assert 'exactly 8' in pilot.error
+
+
+def test_a_chunk_size_out_of_range_fails_when_the_pilot_is_built():
+    with pytest.raises(ValueError, match='1 to 32'):
+        Pilot(FakeBackend(), 'discrete', size=0)

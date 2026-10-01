@@ -23,6 +23,7 @@ off by the difference.
 Each model call is reported on stderr as it returns. A call takes a minute or more without a GPU,
 and drones-render-agent says nothing between loading the scene and writing the film.
 """
+import itertools
 import math
 import sys
 
@@ -31,11 +32,14 @@ import numpy as np
 from drones import config
 from drones.control.mixer import clamp
 from drones.sim.agents import Pose
-from drones.vlm.actions import CHUNK, STEP, ContinuousAction, json_schema
-from drones.vlm.backend import DEFAULT_MODEL, TransformersBackend
+from drones.vlm.actions import CHUNK, STEP, ContinuousAction, chunk_size, json_schema
+from drones.vlm.backend import DEFAULT_MODEL, MAX_NEW_TOKENS, TransformersBackend
 from drones.vlm.pilot import Pilot
 
 ERROR_SHOWN = 200   # characters of a validation error in a progress line
+# Words a caption's action line may hold: what the film's panel was sized for (sim/render_agent
+# AGENT_LINES). A longer chunk is folded into runs, and past that shown as a window.
+PANEL_WORDS = CHUNK
 
 
 def integrate(pose, altitude, command):
@@ -72,7 +76,7 @@ def describe(pilot, over=False):
     if chunk is None:
         error = ' '.join(str(pilot.error).split())[:ERROR_SHOWN]
         lines.append(f'{head}FAILED, {"stopping" if over else "hovering"}: {error}')
-        return lines if over else lines + [f'hover x{CHUNK}']
+        return lines if over else lines + [f'hover x{pilot.size}']
     answer = '-' if pilot.answer is None else repr(pilot.answer)
     head += f'done: {str(chunk.done).lower()}   answer: {answer}'
     if chunk.done:          # its actions, if it has any, are not flown
@@ -80,8 +84,27 @@ def describe(pilot, over=False):
     if pilot.space == 'continuous':
         head += '   (forward/yaw/altitude)'
     words = [_word(action) for action in chunk.actions]
-    words[pilot.played - 1] = f'[{words[pilot.played - 1]}]'
-    return lines + [head, ' '.join(words)]
+    current = pilot.played - 1
+    if len(words) <= PANEL_WORDS:
+        words[current] = f'[{words[current]}]'
+        return lines + [head, ' '.join(words)]
+    return lines + [f'{head}   action {pilot.played} of {len(words)}', _runs(words, current)]
+
+
+def _runs(words, current):
+    """`words` folded into runs (`forward x20`), the run holding `current` in brackets. Runs
+    past PANEL_WORDS are cut to a window around that one, with `...` where they were cut."""
+    runs, at = [], 0
+    for word, group in itertools.groupby(words):
+        n = len(list(group))
+        text = word if n == 1 else f'{word} x{n}'
+        runs.append(f'[{text}]' if at <= current < at + n else text)
+        at += n
+    mark = next(i for i, run in enumerate(runs) if run.startswith('['))
+    first = max(0, min(mark - PANEL_WORDS // 4, len(runs) - PANEL_WORDS))
+    shown = runs[first:first + PANEL_WORDS]
+    return ' '.join((['...'] if first else []) + shown
+                    + (['...'] if first + PANEL_WORDS < len(runs) else []))
 
 
 class VLMAgent:
@@ -140,13 +163,18 @@ class VLMAgent:
 
 
 def make(action_space='continuous', model=DEFAULT_MODEL, start_altitude=1.0,
-         max_new_tokens=None, backend=None, constrain=True):
-    """The agent factory. The local model is held to the chunk's schema as it writes, unless
-    `constrain` is 0 (or false, no, off). `backend` replaces the local model, for tests and
-    other models."""
+         max_new_tokens=None, backend=None, constrain=True, chunk=CHUNK):
+    """The agent factory. `chunk` actions are flown between looks, 1 to 32, each 1/16 s. The
+    local model is held to the chunk's schema as it writes, unless `constrain` is 0 (or false,
+    no, off). `backend` replaces the local model, for tests and other models."""
+    size = chunk_size(chunk)
+    if max_new_tokens is None:
+        # MAX_NEW_TOKENS holds a chunk of the default size; a longer one needs room in
+        # proportion, or every reply is cut off at the limit and rejected.
+        max_new_tokens = MAX_NEW_TOKENS * max(size, CHUNK) // CHUNK
     if backend is None:
         # --agent-arg gives 0 as a number and any other word as text.
         free = str(constrain).lower() in ('0', 'false', 'no', 'off')
         backend = TransformersBackend(model, max_new_tokens,
-                                      schema=None if free else json_schema(action_space))
-    return VLMAgent(Pilot(backend, action_space), start_altitude)
+                                      schema=None if free else json_schema(action_space, size))
+    return VLMAgent(Pilot(backend, action_space, size=size), start_altitude)

@@ -321,3 +321,77 @@ def test_make_holds_the_local_model_to_the_chunk_schema_unless_told_not_to():
     # --agent-arg hands over 0 as a number and anything else as text.
     for off in (0, False, 'false', 'no', 'off'):
         assert vlm_agent.make(constrain=off).pilot.backend.schema is None
+
+
+def test_chunk_sets_how_many_actions_are_flown_between_looks():
+    from drones.vlm.actions import json_schema
+
+    agent = vlm_agent.make(action_space='discrete', chunk=8)
+    assert agent.pilot.size == 8
+    assert agent.pilot.backend.schema == json_schema('discrete', 8)
+    backend = FakeBackend(moves('forward', 8), DONE)
+    agent = vlm_agent.make(action_space='discrete', chunk=8, backend=backend)
+    start = agents.Pose(np.array([1.0, 2.0, 1.5]))
+    seen = list(agents.episode(FakeView(), agent, start))
+    # Each action still lasts 1/16 s: eight of them are half a second, 0.2 m at full speed.
+    assert len(seen) == 9
+    assert seen[-1].pose.pos == pytest.approx([1.0 + config.MAX_MANUAL_SPEED / 2, 2.0, 1.5])
+    assert [int(image[0, 0, 0]) for _, image in backend.calls] == [1, 9]
+
+
+@pytest.mark.parametrize('chunk', [0, 33, 8.5, 'many'])
+def test_a_wrong_chunk_is_a_value_error(chunk):
+    with pytest.raises(ValueError, match='1 to 32'):
+        vlm_agent.make(chunk=chunk)
+
+
+def test_a_short_chunk_is_captioned_whole_and_hovers_its_own_length():
+    agent = vlm_agent.make(action_space='discrete', chunk=4,
+                           backend=FakeBackend(moves('turn_left', 4), *['nonsense'] * 6))
+    shown = []
+    for _ in agents.decided(agents.episode(FakeView(), agent, agents.Pose(np.zeros(3)))):
+        shown.append(agent.caption)
+    assert shown[1][-1] == 'turn_left [turn_left] turn_left turn_left'
+    assert shown[4][-1] == 'hover x4'
+
+
+def long_captions(actions, space='continuous'):
+    reply = json.dumps({'actions': actions})
+    agent = vlm_agent.make(action_space=space, chunk=len(actions), backend=FakeBackend(reply, DONE))
+    shown = []
+    for _ in agents.decided(agents.episode(FakeView(), agent, agents.Pose(np.zeros(3)))):
+        shown.append(agent.caption)
+    return shown
+
+
+def test_a_long_chunk_is_captioned_in_runs_with_the_current_one_marked():
+    shown = long_captions(['forward'] * 20 + ['turn_left'] * 12, space='discrete')
+    assert shown[0][1:] == ['chunk 1 at 0 s   done: false   answer: -   action 1 of 32',
+                            '[forward x20] turn_left x12']
+    assert shown[25][1:] == ['chunk 1 at 0 s   done: false   answer: -   action 26 of 32',
+                             'forward x20 [turn_left x12]']
+
+
+def test_the_longest_chunk_still_fits_the_films_panel_with_the_current_action_in_view():
+    # Thirty-two different continuous actions: no runs to fold, so the caption shows a window.
+    from drones.sim import render_agent
+
+    actions = [{'forward': round(-1 + i / 16, 2), 'yaw': -0.75, 'altitude': 1.25}
+               for i in range(32)]
+    observation = agents.Observation(None, agents.Pose(np.zeros(3)), 0, None)
+    for at in (0, 20, 31):
+        shown = long_captions(actions)[at]
+        lines = render_agent.caption(observation, '', 98, shown)
+        current = '[%+.2f/-0.75/1.25]' % actions[at]['forward']
+        assert any(current in line for line in lines), (at, lines)
+        assert f'action {at + 1} of 32' in lines[3 + 1]
+
+
+def test_the_token_budget_grows_with_the_chunk():
+    # 768 tokens hold 16 continuous actions; 32 cut off at the limit would fail every reply.
+    from drones.vlm.backend import MAX_NEW_TOKENS
+
+    assert vlm_agent.make(chunk=16).pilot.backend.max_new_tokens == MAX_NEW_TOKENS
+    assert vlm_agent.make(chunk=32).pilot.backend.max_new_tokens == 2 * MAX_NEW_TOKENS
+    assert vlm_agent.make(chunk=4).pilot.backend.max_new_tokens == MAX_NEW_TOKENS   # a floor
+    assert vlm_agent.make(chunk=32, max_new_tokens=100).pilot.backend.max_new_tokens == 100
