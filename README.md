@@ -942,6 +942,10 @@ stopped on. A run folder remembers its settings and refuses others; pass `--name
 run of the same benchmark (another model, another action space). IndoorUAV runs its
 `test_seen` and `test_unseen` trajectories only.
 
+The runner sets the VLM agent's `start_altitude` itself (the eye height on the habitat
+benchmarks, the height measured above the scan on IndoorUAV), so `--agent-arg start_altitude=`
+is not needed here.
+
 The budget is counted in model calls: Explore-EQA's `int(√floor area × 3)` for the EQA
 benchmarks, twice the reference path for IndoorUAV. An EQA question whose budget runs out gets
 one more call, in which the model must answer.

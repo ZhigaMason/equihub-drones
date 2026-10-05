@@ -331,3 +331,49 @@ def test_the_cli_flies_a_real_view_of_a_scan(tmp_path):
     assert done.returncode == 0, done.stderr[-2000:]
     row = json.loads(done.stdout.strip().splitlines()[-1])
     assert row['stop'] == 'done' and row['steps'] == 3 and row['budget'] == 12
+
+
+class Altitude(Scripted):
+    start_altitude = 1.0
+
+
+class Measuring(FakeView):
+    def distance(self, origin, direction):
+        return 2.3
+
+
+def altitude_run(tmp_path, view_class, bench, eye_height=1.0):
+    @contextmanager
+    def open_view(scene):
+        yield view_class(scene)
+
+    agent = Altitude(stop_after=1)
+    benchmark.run(bench, [question(1, bench)], agent, tmp_path, open_view,
+                  {'benchmark': bench, 'agent': 'scripted'}, eye_height, lambda *a: None)
+    row = json.loads((tmp_path / 'results.jsonl').read_text().splitlines()[0])
+    return agent, row
+
+
+def test_the_agent_is_told_the_eye_height_it_starts_at(tmp_path):
+    agent, row = altitude_run(tmp_path, FakeView, 'hm-eqa', eye_height=1.5)
+    assert agent.start_altitude == 1.5 and row['start_altitude'] == 1.5
+
+
+def test_indoor_uav_agents_are_told_the_height_measured_above_the_scan(tmp_path):
+    agent, row = altitude_run(tmp_path, Measuring, 'indoor-uav')
+    assert agent.start_altitude == 2.3 and row['start_altitude'] == 2.3
+
+
+def test_a_view_that_cannot_measure_falls_back_to_the_eye_height(tmp_path):
+    agent, _ = altitude_run(tmp_path, FakeView, 'indoor-uav', eye_height=1.2)
+    assert agent.start_altitude == 1.2
+
+
+def test_the_cli_exits_when_the_questions_cannot_be_loaded(tmp_path, monkeypatch):
+    def load(name):
+        raise OSError('no network')
+
+    monkeypatch.setattr(benchmark, 'load_questions', load)
+    with pytest.raises(SystemExit, match='no network'):
+        benchmark.main(['run', '--benchmark', 'hm-eqa', '--agent', 'look-around',
+                        '--fov', '70', '--out', str(tmp_path)])

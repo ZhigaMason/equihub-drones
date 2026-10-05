@@ -170,11 +170,23 @@ def _write_episode(folder, number, pos, yaw, reference, calls):
     part.rename(final)
 
 
+def _start_height(view, question, start, eye_height):
+    """m the start is above the floor: the eye height on habitat benchmarks, but IndoorUAV
+    starts at the dataset's own flight height, so there it is measured down to the scan."""
+    if question.benchmark != 'indoor-uav' or not hasattr(view, 'distance'):
+        return float(eye_height)
+    down = view.distance(start.pos, np.array([0.0, 0.0, -1.0]))
+    return float(down) if np.isfinite(down) else float(eye_height)
+
+
 def _question(view, agent, question, eye_height):
     """Fly `question` in `view`: (results line, flown positions, yaws, reference, calls)."""
     started = time.perf_counter()
     pos, yaw = eqa.start_pose(question, view.scene.origin, eye_height)
     start = agents.Pose(np.asarray(pos, float), float(yaw))
+    height = _start_height(view, question, start, eye_height)
+    if hasattr(agent, 'start_altitude'):
+        agent.start_altitude = height     # reset() reads it: the agent's floor is below it
     reference = _reference(question, eye_height)
     reach = float(getattr(agent, 'reach', metrics.DEFAULT_REACH))
     budget = _budget(question, view, reference, reach)
@@ -191,6 +203,7 @@ def _question(view, agent, question, eye_height):
         'choices': list(question.choices), 'truth': question.answer,
         'answer': getattr(agent, 'answer', None), 'stop': stop,
         'start': 'benchmark' if question.start is not None else 'origin',
+        'start_altitude': height,
         'decisions': decisions, 'budget': budget, 'steps': last.step, 'chunk_size': chunk,
         'path_length': metrics.path_length(flown), 'final_pos': flown[-1].tolist(),
         'final_yaw': float(yaws[-1]), 'goal': None if goal is None else goal.tolist(),
@@ -324,7 +337,13 @@ def main(argv=None):
         config = {'benchmark': name, 'agent': args.agent, 'agent_args': agent_kwargs,
                   'camera': camera, 'eye_height': eye_height, 'questions': args.questions}
         try:
-            questions = select(name, load_questions(name), numbers)
+            try:
+                questions = select(name, load_questions(name), numbers)
+            except Stopped:
+                raise
+            except Exception as exc:
+                raise Stopped(f'stopped at {name}: {exc}. Run the same command again to '
+                              'resume there.') from exc
             run(name, questions, agent, args.out / f'{name}-{tag}', open_view, config,
                 eye_height, print)
         except Stopped as exc:

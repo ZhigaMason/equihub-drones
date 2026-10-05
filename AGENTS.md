@@ -219,11 +219,12 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   `caption` (a list of lines the film shows under the question); both are read by attribute, so
   `sim/` still imports no agent. `drones-benchmark run` (`sim/benchmark.py`) flies an agent over
   whole benchmarks and also reads, by attribute, `chunk_size`, `reach`, `calls`, `stats`, `error`
-  and `conclude(observation)`; all are optional. `drones-benchmark score` (`sim/scoring.py`,
-  metrics in `sim/metrics.py`) imports `drones.vlm.backend` inside a function, for the Claude
-  judge; nothing in `sim/` imports `drones.vlm` at module level. The film writes each frame through `agents.decided`, after the
-  agent has acted on it: a caption read any earlier describes the previous frame, and the frame
-  the agent stopped on would never show why.
+  and `conclude(observation)`; all are optional. It also sets `start_altitude` per question when
+  the agent has one (set, not read). `drones-benchmark score` (`sim/scoring.py`, metrics in
+  `sim/metrics.py`) imports `drones.vlm.backend` inside a function, for the Claude judge;
+  nothing in `sim/` imports `drones.vlm` at module level. The film writes each frame through
+  `agents.decided`, after the agent has acted on it: a caption read any earlier describes the
+  previous frame, and the frame the agent stopped on would never show why.
 - **A VLM that flies** → `src/drones/vlm/`. The schema a model must reply in is
   `vlm/actions.py`, and it is the contract: change the fields, the moves or `CHUNK` there, and
   update the action-space description in `vlm/prompt.py` with them. The prompt shows the reply
