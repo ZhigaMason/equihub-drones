@@ -129,7 +129,7 @@ def _budget(question, view, reference, reach):
 
 
 def _fly(view, agent, question, start, budget):
-    """Fly one episode; (stop reason, decisions, poses, last observation)."""
+    """Fly one episode; (stop reason, decisions, chunk size, poses, last observation)."""
     chunk = int(getattr(agent, 'chunk_size', 1))
     poses, last = [], None
     # Only poses are kept: the frames of a long episode would fill the memory.
@@ -233,6 +233,9 @@ def run(benchmark, questions, agent, folder, open_view, config, eye_height=eqa.E
             raise
         if current is not None:
             shutil.rmtree(folder / 'episodes' / f'{current.number}.part', ignore_errors=True)
+            if current.number not in finished(folder / 'results.jsonl'):
+                # An interrupt after the folder was moved into place, before its line.
+                shutil.rmtree(folder / 'episodes' / str(current.number), ignore_errors=True)
         where = f'{benchmark} question {current.number}' if current else benchmark
         reason = 'interrupted' if isinstance(exc, KeyboardInterrupt) else str(exc) or repr(exc)
         raise Stopped(f'stopped at {where}: {reason}. Run the same command again to resume '

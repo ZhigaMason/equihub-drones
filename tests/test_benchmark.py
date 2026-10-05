@@ -171,3 +171,53 @@ def test_select_keeps_the_numbers_and_indoor_uavs_test_splits():
            question(3, 'indoor-uav', category='traj_3, test unseen, easy'),
            question(4, 'indoor-uav', category='traj_4, unsplit')]
     assert [q.number for q in benchmark.select('indoor-uav', nav)] == [1, 3]
+
+
+def test_a_failure_while_writing_leaves_no_folder_of_the_question(tmp_path, monkeypatch):
+    fly(tmp_path, Scripted(stop_after=1), [question(1)])
+    write = benchmark._write_episode
+
+    def write_then_die(folder, number, *args):
+        write(folder, number, *args)
+        raise RuntimeError('disk full')
+
+    monkeypatch.setattr(benchmark, '_write_episode', write_then_die)
+    with pytest.raises(benchmark.Stopped, match='question 2.*disk full'):
+        fly(tmp_path, Scripted(stop_after=1), [question(1), question(2)])
+    names = sorted(p.name for p in (tmp_path / 'episodes').iterdir())
+    assert names == ['1']
+    assert (tmp_path / 'episodes' / '1' / 'trajectory.npz').is_file()
+
+
+def test_a_failure_during_the_write_itself_leaves_no_part(tmp_path):
+    class Broken(Scripted):
+        @property
+        def calls(self):
+            raise RuntimeError('no calls')
+
+        @calls.setter
+        def calls(self, value):
+            pass
+
+    with pytest.raises(benchmark.Stopped, match='question 1'):
+        fly(tmp_path, Broken(stop_after=1), [question(1)])
+    assert list((tmp_path / 'episodes').iterdir()) == []
+
+
+def test_an_interrupt_becomes_a_stop(tmp_path):
+    class Interrupted(Scripted):
+        def act(self, observation):
+            raise KeyboardInterrupt
+
+    with pytest.raises(benchmark.Stopped, match='interrupted'):
+        fly(tmp_path, Interrupted(), [question(1)])
+
+
+def test_an_agent_that_stops_with_an_error_is_marked_failed(tmp_path):
+    class Errs(Scripted):
+        def act(self, observation):
+            self.error = 'bad reply'
+            return None
+
+    (row,) = fly(tmp_path, Errs(), [question(1)])
+    assert row['stop'] == 'failed'
