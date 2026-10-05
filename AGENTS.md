@@ -217,7 +217,11 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   package.module:factory`. Do not make agents subclass anything, and keep the agent code itself
   out of this repo's `sim/` unless it is a baseline. An agent may also have `answer` and
   `caption` (a list of lines the film shows under the question); both are read by attribute, so
-  `sim/` still imports no agent. The film writes each frame through `agents.decided`, after the
+  `sim/` still imports no agent. `drones-benchmark run` (`sim/benchmark.py`) flies an agent over
+  whole benchmarks and also reads, by attribute, `chunk_size`, `reach`, `calls`, `stats`, `error`
+  and `conclude(observation)`; all are optional. `drones-benchmark score` (`sim/scoring.py`,
+  metrics in `sim/metrics.py`) imports `drones.vlm.backend` inside a function, for the Claude
+  judge; nothing in `sim/` imports `drones.vlm` at module level. The film writes each frame through `agents.decided`, after the
   agent has acted on it: a caption read any earlier describes the previous frame, and the frame
   the agent stopped on would never show why.
 - **A VLM that flies** → `src/drones/vlm/`. The schema a model must reply in is
@@ -313,6 +317,11 @@ Benchmark files are cached in `scenes/benchmarks/`, HM3D scenes in `scenes/hm3d/
 `drones-render-agent` renders offscreen (EGL) and touches no hardware, so you may run it; it
 downloads a question's scene if missing. Tests must not depend on `scenes/`:
 `tests/test_agents.py` swaps `scene_view.load_scene` for a synthetic box and runs `main()` on it.
+
+`drones-benchmark run` with a Claude agent (`backend=claude-code`) and `drones-benchmark score`
+on open-answer benchmarks spend the user's subscription usage: ask before running either. Its
+tests fake the agent, the view and the judge. A run resumes from `results.jsonl`; a line is
+written only after its episode folder, and a start deletes any folder without one.
 
 The VLM pilot has no entry point of its own: it is `drones-render-agent --agent
 drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48`. One step is 1/16 s,

@@ -24,8 +24,11 @@ none: `chunk_size` (steps per decision, 1 without it), `reach` (m one decision f
 
 Scoring is drones.sim.scoring; the metrics themselves are drones.sim.metrics.
 """
+import argparse
+import contextlib
 import json
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -240,3 +243,108 @@ def run(benchmark, questions, agent, folder, open_view, config, eye_height=eqa.E
         reason = 'interrupted' if isinstance(exc, KeyboardInterrupt) else str(exc) or repr(exc)
         raise Stopped(f'stopped at {where}: {reason}. Run the same command again to resume '
                       'there.') from exc
+
+
+def parse_numbers(text):
+    """'7' or '2-40': the question numbers to keep, (first, last)."""
+    first, _, last = text.partition('-')
+    first, last = int(first), int(last or first)
+    if last < first:
+        raise ValueError(f'{text}: the first number comes first')
+    return first, last
+
+
+def load_questions(benchmark):
+    """Every question of `benchmark`. IndoorUAV's test scenes have their instructions fetched
+    first: eqa.load returns only scenes that `prepare` has seen."""
+    if benchmark == 'indoor-uav':
+        eqa.prepare('indoor-uav', eqa.split_scenes(('test_seen.csv', 'test_unseen.csv')))
+    return eqa.load(benchmark)
+
+
+def main(argv=None):
+    from drones.sim import render_agent
+
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    commands = parser.add_subparsers(dest='command', required=True)
+    fly = commands.add_parser('run', help='fly an agent over one or more benchmarks')
+    fly.add_argument('--benchmark', nargs='+', required=True, choices=(*eqa.BENCHMARKS, 'all'),
+                     help='one or more benchmarks, or all of them in order')
+    fly.add_argument('--questions', metavar='A-B', help='only these question numbers, e.g. 1-50')
+    fly.add_argument('--agent', required=True,
+                     help='look-around, follow-path, or package.module:factory')
+    fly.add_argument('--agent-arg', action='append', default=[], metavar='KEY=VALUE',
+                     help='keyword argument for the agent factory; repeat for more')
+    render_agent.add_camera_args(fly)
+    fly.add_argument('--out', type=Path, default=RUNS_DIR,
+                     help=f'where run folders go (default: {RUNS_DIR})')
+    fly.add_argument('--name', help='the run folder is BENCHMARK-NAME (default: the agent)')
+    marks = commands.add_parser('score', help='score run folders and print one report')
+    marks.add_argument('folders', nargs='+', type=Path)
+    marks.add_argument('--judge-model', default=None,
+                       help='the Claude model that marks open answers (default: sonnet)')
+    args = parser.parse_args(argv)
+    if args.command == 'score':
+        return _score(args)
+
+    numbers = None
+    if args.questions:
+        try:
+            numbers = parse_numbers(args.questions)
+        except ValueError as exc:
+            parser.error(f'--questions: {exc}')
+    agent_kwargs = render_agent.parse_agent_args(parser, args.agent_arg)
+    try:
+        import drones.sim  # noqa: F401  CrazyFlow first, before anything imports scipy.
+    except ImportError:
+        sys.exit('drones-benchmark needs the sim extra:  uv sync --extra sim')
+    from drones.sim import scenes
+    from drones.sim.scene_view import SceneView
+
+    intrinsics, mount = render_agent.camera_from(args, parser)
+    eye_height = eqa.EYE_HEIGHT if args.eye_height is None else args.eye_height
+    try:
+        agent = agents.make_agent(args.agent, **agent_kwargs)
+    except (ValueError, ImportError, AttributeError) as exc:
+        parser.error(f'--agent {args.agent}: {exc}')
+
+    @contextlib.contextmanager
+    def open_view(scene):
+        scenes.download([scene])
+        with SceneView(scene, intrinsics, mount=mount) as view:
+            yield view
+
+    names = eqa.BENCHMARKS if 'all' in args.benchmark else tuple(
+        dict.fromkeys(args.benchmark))
+    tag = args.name or args.agent.replace(':', '.')
+    camera = {'width': intrinsics.width, 'height': intrinsics.height, 'fov': args.fov,
+              'intrinsics': None if args.intrinsics is None else str(args.intrinsics),
+              'mount': not args.no_mount}
+    for name in names:
+        config = {'benchmark': name, 'agent': args.agent, 'agent_args': agent_kwargs,
+                  'camera': camera, 'eye_height': eye_height, 'questions': args.questions}
+        try:
+            questions = select(name, load_questions(name), numbers)
+            run(name, questions, agent, args.out / f'{name}-{tag}', open_view, config,
+                eye_height, print)
+        except Stopped as exc:
+            sys.exit(str(exc))
+    print('All done. Score with:  drones-benchmark score ' +
+          ' '.join(str(args.out / f'{n}-{tag}') for n in names))
+
+
+def _score(args):
+    from drones.sim import scoring
+
+    model = args.judge_model or scoring.JUDGE_MODEL
+    summaries = []
+    for folder in args.folders:
+        if not (folder / 'results.jsonl').exists():
+            continue
+        try:
+            summaries.append(scoring.score(folder, scoring.claude_judge(folder, model)))
+        except Stopped as exc:
+            sys.exit(str(exc))
+    if not summaries:
+        sys.exit('no run folders with results.jsonl among those given')
+    print(scoring.report(summaries))

@@ -54,6 +54,44 @@ def parse_agent_args(parser, pairs):
     return kwargs
 
 
+def add_camera_args(parser):
+    """The agent camera's options, shared with drones-benchmark."""
+    parser.add_argument('--intrinsics', type=Path,
+                        help="the agent camera's calibration (default: recordings/intrinsics.json)")
+    parser.add_argument('--fov', type=float,
+                        help='an ideal pinhole this many degrees across instead of --intrinsics')
+    parser.add_argument('--width', type=int, help='agent camera width (default: the '
+                        "calibration's, or 320 with --fov)")
+    parser.add_argument('--height', type=int, help='agent camera height (default: the '
+                        "calibration's, or 240 with --fov)")
+    parser.add_argument('--no-mount', action='store_true',
+                        help="put the camera at the drone's centre, level, instead of where the "
+                             'AI-deck sits')
+    parser.add_argument('--eye-height', type=float, default=None,
+                        help='m above a habitat start the drone begins (default: 1.0)')
+
+
+def camera_from(args, parser):
+    """(Intrinsics, Mount) from add_camera_args' options; a usage error if they clash."""
+    from drones.sim.lens import DECK_MOUNT, DEFAULT_INTRINSICS, Intrinsics, Mount
+
+    if (args.width is None) != (args.height is None):
+        parser.error('--width and --height go together')
+    if args.fov is not None and args.intrinsics is not None:
+        parser.error('--fov and --intrinsics are alternatives')
+    if args.fov is not None:
+        width, height = (args.width, args.height) if args.width else (320, 240)
+        intrinsics = Intrinsics.from_fov(width, height, math.radians(args.fov))
+    else:
+        path = args.intrinsics or DEFAULT_INTRINSICS
+        if not path.is_file():
+            parser.error(f'no calibration at {path}; pass --intrinsics or --fov')
+        intrinsics = Intrinsics.load(path)
+        if args.width is not None:
+            intrinsics = intrinsics.resized(args.width, args.height)
+    return intrinsics, Mount() if args.no_mount else DECK_MOUNT
+
+
 def pick_question(benchmark, number):
     """(scene name, question) for `benchmark`'s question `number`, its scene downloaded."""
     from drones.sim import eqa, scenes
@@ -123,19 +161,7 @@ def main(argv=None):
                              '(default: look-around)')
     parser.add_argument('--agent-arg', action='append', default=[], metavar='KEY=VALUE',
                         help='keyword argument for the agent factory; repeat for more')
-    parser.add_argument('--intrinsics', type=Path,
-                        help="the agent camera's calibration (default: recordings/intrinsics.json)")
-    parser.add_argument('--fov', type=float,
-                        help='an ideal pinhole this many degrees across instead of --intrinsics')
-    parser.add_argument('--width', type=int, help='agent camera width (default: the '
-                        "calibration's, or 320 with --fov)")
-    parser.add_argument('--height', type=int, help='agent camera height (default: the '
-                        "calibration's, or 240 with --fov)")
-    parser.add_argument('--no-mount', action='store_true',
-                        help="put the camera at the drone's centre, level, instead of where the "
-                             'AI-deck sits')
-    parser.add_argument('--eye-height', type=float, default=None,
-                        help='m above a habitat start the drone begins (default: 1.0)')
+    add_camera_args(parser)
     parser.add_argument('--chase-distance', type=float, default=None,
                         help='m behind the drone (default: 1.0), less where the scan is closer')
     parser.add_argument('--steps', type=int, default=None,
@@ -147,10 +173,6 @@ def main(argv=None):
                         help='video file, format from its extension '
                              f'(default: {OUT_DIR}/NAME.mp4)')
     args = parser.parse_args(argv)
-    if (args.width is None) != (args.height is None):
-        parser.error('--width and --height go together')
-    if args.fov is not None and args.intrinsics is not None:
-        parser.error('--fov and --intrinsics are alternatives')
     if args.ask is not None and args.benchmark is not None:
         parser.error('--ask goes with --scene; a benchmark question brings its own text')
     if args.fps <= 0 or args.scale < 1 or (args.steps is not None and args.steps < 0):
@@ -168,23 +190,13 @@ def main(argv=None):
     from PIL import ImageFont
 
     from drones.sim import agents, eqa
-    from drones.sim.lens import DECK_MOUNT, DEFAULT_INTRINSICS, Intrinsics, Mount
     from drones.sim.scene_view import CHASE_DISTANCE, DRONE, ChaseCamera, SceneView
 
     # imageio-ffmpeg starts ffmpeg with fork + exec, which is safe; Python warns only because JAX
     # has threads running.
     warnings.filterwarnings('ignore', message=r'os\.fork\(\) was called', category=RuntimeWarning)
 
-    if args.fov is not None:
-        width, height = (args.width, args.height) if args.width else (320, 240)
-        intrinsics = Intrinsics.from_fov(width, height, math.radians(args.fov))
-    else:
-        path = args.intrinsics or DEFAULT_INTRINSICS
-        if not path.is_file():
-            parser.error(f'no calibration at {path}; pass --intrinsics or --fov')
-        intrinsics = Intrinsics.load(path)
-        if args.width is not None:
-            intrinsics = intrinsics.resized(args.width, args.height)
+    intrinsics, mount = camera_from(args, parser)
     try:
         agent = agents.make_agent(args.agent, **agent_kwargs)
     except (ValueError, ImportError, AttributeError) as exc:
@@ -206,7 +218,6 @@ def main(argv=None):
     out.parent.mkdir(parents=True, exist_ok=True)
 
     print(f'Loading {scene} ...', flush=True)
-    mount = Mount() if args.no_mount else DECK_MOUNT
     try:
         view = SceneView(scene, intrinsics, mount=mount, drone=DRONE)
     except FileNotFoundError as exc:

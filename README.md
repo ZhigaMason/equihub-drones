@@ -923,6 +923,53 @@ whose starts are at the dataset's own flight height, or a run with `--eye-height
 height as `--agent-arg start_altitude=`. Otherwise the altitude the model is told and the 0.2 to
 2.0 m limits are both off by the difference.
 
+### Benchmarking a pilot
+
+`drones-benchmark` flies an agent over every question of a benchmark and scores it the way
+FAST-EQA does. It is meant to run overnight, for as many nights as a benchmark takes:
+
+```bash
+uv run --extra sim drones-benchmark run --benchmark hm-eqa \
+    --agent drones.vlm.agent:make --agent-arg backend=claude-code --agent-arg action_space=discrete
+uv run --extra sim drones-benchmark run --benchmark all --agent ...        # every benchmark
+uv run --extra sim drones-benchmark run --benchmark a-eqa --questions 1-20 --agent ...
+uv run --extra sim drones-benchmark score runs/benchmarks/*
+```
+
+A run stops at the first failure — a usage limit, a logged-out CLI, a scene that would not
+download, Ctrl-C — and keeps everything finished. The same command resumes at the question it
+stopped on. A run folder remembers its settings and refuses others; pass `--name` for a second
+run of the same benchmark (another model, another action space). IndoorUAV runs its
+`test_seen` and `test_unseen` trajectories only.
+
+The budget is counted in model calls: Explore-EQA's `int(√floor area × 3)` for the EQA
+benchmarks, twice the reference path for IndoorUAV. An EQA question whose budget runs out gets
+one more call, in which the model must answer.
+
+| Benchmark | Metrics |
+| --- | --- |
+| hm-eqa, mt-hm3d | SR, normalized steps (calls ÷ budget) |
+| express-bench | LLM-Score C\*, E_path, d_T |
+| a-eqa | LLM-Match |
+| indoor-uav | SR (2 m), NE, OSR, nDTW |
+
+Each also reports seconds per call, how many replies were valid at once, after a retry or not
+at all, and how many questions ran out of budget. Open answers are marked 1 to 5 by Claude
+(`--judge-model`, sonnet by default) with OpenEQA's own prompt; marks are cached in
+`judged.jsonl`. `report.md` lists where this differs from the papers: Claude as the judge, no
+grounding term, straight-line distances in a scan the drone can fly through, a step that flies
+0.4 m where Explore-EQA's flies 3 m, and a floor area from the scan's vertices.
+
+What a run writes, under `runs/benchmarks/<benchmark>-<name>/`:
+
+- `config.json`, `results.jsonl` (a line per question), and after `score`, `scores.json` and
+  `report.md`;
+- `episodes/<number>/trajectory.npz`: `pos` and `yaw` at every step, and the `reference` path;
+- `episodes/<number>/calls.jsonl` and `calls/<k>.png`: **the distillation data**. One line per
+  model call, retries and the final answer included: `step`, `elapsed`, `altitude`, `pos`,
+  `yaw`, the exact `prompt`, the raw `reply`, `attempt`, `valid`, `error`, the parsed `chunk`,
+  `seconds`, `final`, and `image`, the frame the model saw, at the camera's own size.
+
 ### Measured here
 
 These numbers are from the first version of the prompt, which showed the reply format as one

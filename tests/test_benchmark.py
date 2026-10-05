@@ -1,6 +1,10 @@
 """drones-benchmark's run loop on a fake view: what it writes, where it stops, how it resumes.
 No scene, model or renderer: `open_view` hands back a stand-in that numbers its frames."""
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from contextlib import contextmanager
 
 import numpy as np
@@ -11,6 +15,21 @@ pytest.importorskip('crazyflow')
 from drones.sim import agents, benchmark, eqa
 
 CHOICES = ('A) red', 'B) blue')
+
+
+def gl_env():
+    env = dict(os.environ)
+    env.setdefault('MUJOCO_GL', 'egl')
+    return env
+
+
+def can_render():
+    code = 'import mujoco; c = mujoco.GLContext(16, 16); c.make_current(); c.free()'
+    return subprocess.run([sys.executable, '-c', code], env=gl_env(),
+                          capture_output=True).returncode == 0
+
+
+needs_gl = pytest.mark.skipif(not can_render(), reason='no offscreen OpenGL (MUJOCO_GL=egl)')
 
 
 class Room:
@@ -221,3 +240,94 @@ def test_an_agent_that_stops_with_an_error_is_marked_failed(tmp_path):
 
     (row,) = fly(tmp_path, Errs(), [question(1)])
     assert row['stop'] == 'failed'
+
+
+def test_parse_numbers():
+    assert benchmark.parse_numbers('3') == (3, 3)
+    assert benchmark.parse_numbers('2-40') == (2, 40)
+    with pytest.raises(ValueError):
+        benchmark.parse_numbers('40-2')
+
+
+def test_the_cli_runs_every_benchmark_in_order_and_scores_them(tmp_path, monkeypatch):
+    flown = []
+    monkeypatch.setattr(benchmark, 'load_questions',
+                        lambda name: [question(1, name, choices=CHOICES if name in
+                                               ('hm-eqa', 'mt-hm3d') else (),
+                                               category='traj_1, test seen, easy',
+                                               path=np.array([[0.0, 0, 1], [0.4, 0, 1]]),
+                                               goal=np.array([0.4, 0, 1]))])
+
+    def run(name, questions, agent, folder, open_view, config, eye_height, log):
+        flown.append((name, folder.name, [q.number for q in questions], config['agent']))
+
+    monkeypatch.setattr(benchmark, 'run', run)
+    benchmark.main(['run', '--benchmark', 'all', '--agent', 'look-around', '--fov', '70',
+                    '--out', str(tmp_path)])
+    assert [f[0] for f in flown] == ['hm-eqa', 'mt-hm3d', 'express-bench', 'a-eqa',
+                                     'indoor-uav']
+    assert flown[0][1] == 'hm-eqa-look-around' and flown[0][3] == 'look-around'
+
+
+def test_the_cli_exits_with_the_reason_a_run_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr(benchmark, 'load_questions', lambda name: [question(1)])
+
+    def run(*args, **kwargs):
+        raise benchmark.Stopped('stopped at hm-eqa question 1: usage limit reached')
+
+    monkeypatch.setattr(benchmark, 'run', run)
+    with pytest.raises(SystemExit, match='usage limit reached'):
+        benchmark.main(['run', '--benchmark', 'hm-eqa', '--agent', 'look-around',
+                        '--fov', '70', '--out', str(tmp_path)])
+
+
+def test_the_cli_scores_folders_into_one_report(tmp_path, monkeypatch, capsys):
+    from drones.sim import scoring
+
+    folder = tmp_path / 'hm-eqa-x'
+    fly(folder, Scripted(stop_after=1), [question(1)])
+    monkeypatch.setattr(scoring, 'claude_judge', lambda folder, model: None)
+    benchmark.main(['score', str(folder)])
+    assert (folder / 'report.md').is_file() and (folder / 'scores.json').is_file()
+    assert 'hm-eqa' in capsys.readouterr().out
+
+
+CLI_ON_A_BOX = textwrap.dedent('''
+    import json, sys
+    import numpy as np
+    from drones.sim import benchmark, eqa, scene_view, scenes
+
+    def box():
+        """A 4 x 4 x 2.5 m room, with a ring of vertices 1 m up for the floor area."""
+        corners = [[x, y, z] for x in (-2.0, 2.0) for y in (-2.0, 2.0) for z in (0.0, 1.0, 2.5)]
+        corners = np.array(corners, np.float32)
+        faces = []
+        for a, b, c, d in [(0, 3, 9, 6), (2, 5, 11, 8), (0, 6, 8, 2), (3, 9, 11, 5),
+                           (0, 2, 5, 3), (6, 8, 11, 9)]:
+            faces += [[a, b, c], [a, c, d]]
+        uv = np.zeros((len(corners), 2), np.float32) + 0.5
+        texture = np.full((2, 2, 3), 150, np.uint8)
+        part = scenes.Part(corners, np.array(faces, np.int32), uv, texture)
+        return scenes.Scene('box', [part], np.zeros(3), 2.0)
+
+    scene = box()
+    scene_view.load_scene = lambda name, dest=None: scene
+    scenes.download = lambda names, dest=None: None
+    benchmark.load_questions = lambda name: [eqa.Question(
+        'hm-eqa', 1, 'box', 'What colour?', 'B) blue', 'colour', ('A) red', 'B) blue'),
+        np.zeros(3), 0.0)]
+    out = sys.argv[1]
+    benchmark.main(['run', '--benchmark', 'hm-eqa', '--agent', 'look-around',
+                    '--agent-arg', 'steps=3', '--fov', '70', '--width', '40', '--height', '30',
+                    '--out', out])
+    print(open(out + '/hm-eqa-look-around/results.jsonl').read())
+''')
+
+
+@needs_gl
+def test_the_cli_flies_a_real_view_of_a_scan(tmp_path):
+    done = subprocess.run([sys.executable, '-c', CLI_ON_A_BOX, str(tmp_path)], env=gl_env(),
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    row = json.loads(done.stdout.strip().splitlines()[-1])
+    assert row['stop'] == 'done' and row['steps'] == 3 and row['budget'] == 12
