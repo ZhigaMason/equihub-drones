@@ -10,6 +10,10 @@ a second failure plays a chunk of hover, the one action that is safe whatever th
 Three failed chunks in a row end the episode, because a model that cannot follow the format will
 not start to.
 
+Every backend call is kept in `calls`, retries and failures included, with the exact prompt,
+image and reply: a benchmark saves them as data to distil a smaller pilot from. `conclude` is
+for a benchmark whose budget ran out: one more look, and the model must answer.
+
 Nothing here knows about poses or the simulator. A real-drone adapter would call `step` with
 AI-deck frames and hand each Command to `DroneController.set_control`.
 """
@@ -18,7 +22,7 @@ import time
 from collections import deque
 
 from drones.vlm.actions import CHUNK, STEP, chunk_size, parse_chunk, schema_for, to_command
-from drones.vlm.prompt import build_prompt, retry_prompt
+from drones.vlm.prompt import build_prompt, final_prompt, retry_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ class Pilot:
         self.queries = 0
         self.seconds = 0.0      # spent in the backend
         self.stats = {'first': 0, 'retry': 0, 'failed': 0}
+        self.calls = []         # one record per backend call, for a benchmark to save
         self.chunk = None       # the chunk being flown; None before the first and after a failure
         self.played = 0         # how many of its actions have been handed out
         self.asked_at = 0.0     # s into the episode when it was asked for
@@ -70,7 +75,7 @@ class Pilot:
         """Queue the next chunk's actions. False when the episode ends instead."""
         prompt = build_prompt(self.space, self.question, self.choices, altitude,
                               self._steps * STEP, self.size)
-        chunk = self._ask(prompt, image)
+        chunk = self._ask(prompt, image, altitude)
         self.chunk, self.played, self.asked_at = chunk, 0, self._steps * STEP
         if chunk is None:
             self.stats['failed'] += 1
@@ -89,21 +94,48 @@ class Pilot:
         self._actions.extend(chunk.actions)
         return True
 
-    def _ask(self, prompt, image):
-        """A valid chunk for `image`, or None after ATTEMPTS invalid replies."""
+    def _ask(self, prompt, image, altitude, final=False):
+        """A valid chunk for `image`, or None after ATTEMPTS invalid replies. A `final` reply
+        must also set done and give an answer."""
         asked = prompt
         for attempt in range(ATTEMPTS):
             started = time.perf_counter()
             reply = self.backend.generate(asked, image)
-            self.seconds += time.perf_counter() - started
+            seconds = time.perf_counter() - started
+            self.seconds += seconds
             self.queries += 1
+            record = {'step': self._steps, 'elapsed': self._steps * STEP, 'altitude': altitude,
+                      'prompt': asked, 'reply': reply, 'attempt': attempt + 1, 'valid': False,
+                      'error': None, 'chunk': None, 'seconds': seconds, 'final': final,
+                      'image': image}
+            self.calls.append(record)
             try:
                 chunk = parse_chunk(reply, self.space, self.size)
+                if final and not (chunk.done and chunk.answer is not None):
+                    raise ValueError('this was your last look: set "done" to true and give '
+                                     'your answer')
             except ValueError as exc:
-                self.error = str(exc)
+                self.error = record['error'] = str(exc)
                 logger.warning('reply %d rejected: %s', self.queries, self.error)
                 asked = retry_prompt(prompt, reply, self.error)
                 continue
+            record['valid'], record['chunk'] = True, chunk.model_dump()
             self.stats['retry' if attempt else 'first'] += 1
             return chunk
         return None
+
+    def conclude(self, image, altitude):
+        """The answer after one last look at `image`, with the drone at `altitude` m, for an
+        episode whose budget ran out. A model that gives none keeps the answer it had. The
+        episode is over afterwards."""
+        prompt = final_prompt(self.space, self.question, self.choices, altitude,
+                              self._steps * STEP, self.size)
+        chunk = self._ask(prompt, image, altitude, final=True)
+        if chunk is None:
+            self.stats['failed'] += 1
+        else:
+            self.answer, self.error = chunk.answer, None
+        self.chunk, self.played = chunk, 0
+        self._actions.clear()
+        self._over = True
+        return self.answer

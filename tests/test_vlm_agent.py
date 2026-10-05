@@ -408,3 +408,27 @@ def test_the_token_budget_grows_with_the_chunk():
     assert vlm_agent.make(chunk=32).pilot.backend.max_new_tokens == 2 * MAX_NEW_TOKENS
     assert vlm_agent.make(chunk=4).pilot.backend.max_new_tokens == MAX_NEW_TOKENS   # a floor
     assert vlm_agent.make(chunk=32, max_new_tokens=100).pilot.backend.max_new_tokens == 100
+
+
+def test_the_agent_tells_a_benchmark_its_chunk_reach_calls_and_stats():
+    agent = vlm_agent.make(action_space='discrete', chunk=8,
+                           backend=FakeBackend(json.dumps({'actions': ['forward'] * 8}), DONE))
+    assert agent.chunk_size == 8
+    assert agent.reach == pytest.approx(8 * config.MAX_MANUAL_SPEED / 16)
+    start = agents.Pose(np.array([1.0, 2.0, 1.0]), yaw=0.0)
+    agent.reset(None, start)
+    observation = agents.Observation(np.zeros((2, 2, 3), np.uint8), start, 0, None)
+    agent.act(observation)
+    (call,) = agent.calls
+    assert call['pos'] == [1.0, 2.0, 1.0] and call['yaw'] == 0.0
+    assert agent.stats == {'first': 1, 'retry': 0, 'failed': 0}
+
+
+def test_the_agent_concludes_from_the_last_observation():
+    agent = vlm_agent.make(action_space='discrete', backend=FakeBackend(DONE))
+    start = agents.Pose(np.array([0.0, 0.0, 1.5]))
+    agent.reset(None, start)
+    last = agents.Observation(np.zeros((2, 2, 3), np.uint8), start, 40, None)
+    assert agent.conclude(last) == 'B'
+    assert agent.calls[-1]['final'] is True and agent.calls[-1]['pos'] == [0.0, 0.0, 1.5]
+    assert '1.00 m' in agent.calls[-1]['prompt']       # 1.5 m start, 1.0 m start_altitude

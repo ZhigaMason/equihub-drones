@@ -204,3 +204,58 @@ def test_a_reply_of_the_default_size_is_wrong_for_another():
 def test_a_chunk_size_out_of_range_fails_when_the_pilot_is_built():
     with pytest.raises(ValueError, match='1 to 32'):
         Pilot(FakeBackend(), 'discrete', size=0)
+
+
+def test_every_model_call_is_recorded_with_what_the_model_saw_and_said():
+    backend = FakeBackend(BAD, FORWARD, DONE)
+    pilot = started(backend)
+    fly(pilot, CHUNK + 1, altitude=1.25)
+    calls = pilot.calls
+    assert [c['attempt'] for c in calls] == [1, 2, 1]
+    assert [c['valid'] for c in calls] == [False, True, True]
+    assert [c['step'] for c in calls] == [0, 0, CHUNK]
+    assert [c['image'] for c in calls] == [0, 0, CHUNK]
+    assert [c['prompt'] for c in calls] == [prompt for prompt, _ in backend.calls]
+    assert calls[0]['reply'] == BAD and 'exactly' in calls[0]['error']
+    assert calls[0]['chunk'] is None
+    assert calls[1]['chunk']['actions'] == ['forward'] * CHUNK
+    assert calls[2]['chunk']['done'] is True
+    assert calls[2]['elapsed'] == pytest.approx(1.0)
+    assert {c['altitude'] for c in calls} == {1.25}
+    assert not any(c['final'] for c in calls)
+    assert all(c['seconds'] >= 0 for c in calls)
+
+
+def test_reset_forgets_the_calls():
+    pilot = started(FakeBackend(DONE))
+    fly(pilot, 1)
+    pilot.reset('Again.')
+    assert pilot.calls == []
+
+
+def test_conclude_asks_once_more_and_takes_the_answer():
+    backend = FakeBackend(FORWARD, DONE)
+    pilot = started(backend)
+    fly(pilot, CHUNK)
+    assert pilot.conclude('last', 1.0) == 'B'
+    assert pilot.answer == 'B'
+    final = pilot.calls[-1]
+    assert final['final'] is True and final['image'] == 'last'
+    assert 'LAST LOOK' in final['prompt']
+    assert pilot.step(0, 1.0) is None               # the episode is over
+
+
+def test_conclude_retries_a_reply_that_does_not_finish():
+    pilot = started(FakeBackend(FORWARD, FORWARD, DONE))
+    fly(pilot, CHUNK)
+    assert pilot.conclude('last', 1.0) == 'B'
+    assert [c['attempt'] for c in pilot.calls if c['final']] == [1, 2]
+    assert 'last look' in pilot.calls[-2]['error']
+
+
+def test_conclude_that_fails_keeps_the_answer_it_had():
+    early = json.dumps({'actions': ['forward'] * CHUNK, 'answer': 'C'})
+    pilot = started(FakeBackend(early, BAD, BAD))
+    fly(pilot, CHUNK)
+    assert pilot.conclude('last', 1.0) == 'C'
+    assert pilot.stats['failed'] == 1

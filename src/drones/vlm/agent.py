@@ -22,6 +22,10 @@ are at the dataset's own flight height, and after `--eye-height`: pass the real 
 `--agent-arg start_altitude=`, or the altitude the model is told and the altitude limits are both
 off by the difference.
 
+For drones-benchmark the agent also has `chunk_size`, `reach` (m one chunk can fly at most),
+`calls` (the pilot's records, with the pose of each), `stats` and `conclude`, which asks for
+an answer when the benchmark's budget has run out. drones.sim reads them by name.
+
 Each model call is reported on stderr as it returns. A call takes a minute or more without a GPU,
 and drones-render-agent says nothing between loading the scene and writing the film.
 """
@@ -128,14 +132,32 @@ class VLMAgent:
         pose = observation.pose
         altitude = float(pose.pos[2]) - self._floor
         pilot = self.pilot
-        stats, seconds = dict(pilot.stats), pilot.seconds
+        stats, seconds, before = dict(pilot.stats), pilot.seconds, len(pilot.calls)
         command = pilot.step(observation.image, altitude)
+        self._tag(before, pose)
         if pilot.stats != stats:
             self._report(observation.step, stats, pilot.seconds - seconds, command is None)
         if command is None:
             self._over = True
             return None
         return integrate(pose, altitude, command)
+
+    def conclude(self, observation):
+        """The pilot's answer after one last look at `observation`, when a benchmark's budget
+        has run out."""
+        pilot = self.pilot
+        stats, seconds, before = dict(pilot.stats), pilot.seconds, len(pilot.calls)
+        answer = pilot.conclude(observation.image, float(observation.pose.pos[2]) - self._floor)
+        self._tag(before, observation.pose)
+        self._over = True
+        self._report(observation.step, stats, pilot.seconds - seconds, True)
+        return answer
+
+    def _tag(self, since, pose):
+        """Put `pose` on the pilot's call records from index `since` on."""
+        for call in self.pilot.calls[since:]:
+            call['pos'] = [float(x) for x in pose.pos]
+            call['yaw'] = float(pose.yaw)
 
     def _report(self, step, before, seconds, over):
         """One stderr line for the chunk just asked for at `step`."""
@@ -163,6 +185,23 @@ class VLMAgent:
     @property
     def error(self):
         return self.pilot.error
+
+    @property
+    def chunk_size(self):
+        return self.pilot.size
+
+    @property
+    def reach(self):
+        """m one chunk flies at most: all of it forward at full speed."""
+        return self.pilot.size * STEP * config.MAX_MANUAL_SPEED
+
+    @property
+    def calls(self):
+        return self.pilot.calls
+
+    @property
+    def stats(self):
+        return dict(self.pilot.stats)
 
 
 def make(action_space='continuous', model=None, start_altitude=1.0,

@@ -130,6 +130,17 @@ def build_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0, si
     return '\n'.join(lines)
 
 
+# The last section of the prompt when a benchmark's budget has run out: the model must answer
+# now. The reply format is the template shown above it, so this holds no JSON of its own.
+FINAL = ('THIS IS YOUR LAST LOOK. The flight is over: answer now, from this image and the task. '
+         'Reply in the second form above, with "done" set to true and your answer.')
+
+
+def final_prompt(space, question=None, choices=(), altitude=0.0, elapsed=0.0, size=CHUNK):
+    """`build_prompt`'s prompt with a last section that asks for the answer now."""
+    return f'{build_prompt(space, question, choices, altitude, elapsed, size)}\n\n{FINAL}'
+
+
 def retry_prompt(prompt, reply, error):
     """`prompt` again, after the `reply` that was rejected and the `error` that rejected it."""
     return (f'{prompt}\n\nYour last reply was rejected:\n{reply[:REPLY_SHOWN]}\n\n'

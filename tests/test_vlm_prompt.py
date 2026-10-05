@@ -117,3 +117,17 @@ def test_nothing_in_a_prompt_of_another_size_would_pass_as_a_reply():
             for line in build_prompt(space, 'Find the sofa.', size=size).splitlines():
                 with pytest.raises(ValueError):
                     parse_chunk(line, space, size=size)
+
+
+@pytest.mark.parametrize('space', ['discrete', 'continuous'])
+def test_the_last_look_asks_for_an_answer_and_still_shows_no_reply(space):
+    from drones.vlm.actions import parse_chunk
+    from drones.vlm.prompt import build_prompt, final_prompt
+
+    text = final_prompt(space, 'Where is the sofa?', ('A) kitchen', 'B) lounge'), 1.0, 30.0)
+    assert text.startswith(build_prompt(space, 'Where is the sofa?',
+                                        ('A) kitchen', 'B) lounge'), 1.0, 30.0))
+    assert 'LAST LOOK' in text and 'done' in text
+    for line in text.splitlines():
+        with pytest.raises(ValueError):
+            parse_chunk(line, space)
