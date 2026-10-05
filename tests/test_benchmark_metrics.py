@@ -102,3 +102,30 @@ def test_navigation_success_error_and_oracle():
     assert metrics.navigation(path, goal) == {'success': False, 'ne': pytest.approx(4.5),
                                               'oracle': True}
     assert metrics.navigation(path, np.array([9.0, 0, 1]))['success'] is True
+
+
+def _flight(reference_length, points, offset):
+    t = np.linspace(0, reference_length, points)
+    return np.stack([t, np.full_like(t, offset), np.ones_like(t)], axis=1)
+
+
+def test_ndtw_does_not_depend_on_how_densely_the_flight_is_sampled():
+    ref = np.array([[0.0, 0, 1], [14, 0, 1], [14, 0, 1], [28, 0, 1]])   # sparse, a duplicate
+    few = metrics.ndtw(ref, _flight(28, 30, 1.0))
+    many = metrics.ndtw(ref, _flight(28, 2000, 1.0))
+    assert few == pytest.approx(many, rel=0.02)
+    assert 0.0 < many < 1.0
+    assert metrics.ndtw(ref, _flight(28, 2000, 0.0)) == pytest.approx(1.0, abs=1e-6)
+    assert metrics.ndtw(ref, ref) == pytest.approx(1.0)
+
+
+def test_dtw_of_sequences_of_unequal_length():
+    a = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
+    b = np.array([[0.0, 0, 0], [3, 0, 0]])
+    assert metrics.dtw(a, b) == pytest.approx(2.0)      # (1,0)->b0 costs 1, (2,0)->b1 costs 1
+
+
+def test_resample_keeps_the_endpoints_and_spaces_by_arc_length():
+    p = metrics.resample(np.array([[0.0, 0, 0], [0, 0, 0], [1.2, 0, 0]]), 0.5)
+    assert p[:, 0] == pytest.approx([0.0, 0.5, 1.0, 1.2])
+    assert len(metrics.resample(np.array([[1.0, 2, 3], [1, 2, 3]]), 0.5)) == 1

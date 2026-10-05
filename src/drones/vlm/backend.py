@@ -190,6 +190,8 @@ class ClaudeCodeBackend:
                  system=CLAUDE_SYSTEM):
         self.model, self.executable, self.timeout = model, executable, float(timeout)
         self.system = system
+        # The model the CLI says it ran, from its init event; `model` may be an alias.
+        self.resolved_model = None
 
     def command(self):
         return [self.executable, '-p',
@@ -223,6 +225,10 @@ class ClaudeCodeBackend:
             except subprocess.TimeoutExpired:
                 raise RuntimeError(f'claude timed out after {self.timeout:.0f} s') from None
         events = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+        for event in events:
+            if event.get('type') == 'system' and event.get('subtype') == 'init' \
+                    and event.get('model'):
+                self.resolved_model = event['model']
         results = [event for event in events if event.get('type') == 'result']
         if not results:
             raise RuntimeError(f'claude exited {out.returncode} without a result: '

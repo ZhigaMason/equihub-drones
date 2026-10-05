@@ -377,3 +377,60 @@ def test_the_cli_exits_when_the_questions_cannot_be_loaded(tmp_path, monkeypatch
     with pytest.raises(SystemExit, match='no network'):
         benchmark.main(['run', '--benchmark', 'hm-eqa', '--agent', 'look-around',
                         '--fov', '70', '--out', str(tmp_path)])
+
+
+def test_a_kill_while_cleaning_a_torn_results_file_loses_no_finished_line(tmp_path,
+                                                                           monkeypatch):
+    fly(tmp_path, Scripted(stop_after=1), [question(1), question(2)])
+    with open(tmp_path / 'results.jsonl', 'a') as f:
+        f.write('{"number": 3, "benchm')
+    before = (tmp_path / 'results.jsonl').read_text()
+
+    def killed(*args):
+        raise OSError('power cut')
+
+    monkeypatch.setattr(os, 'replace', killed)
+    with pytest.raises(OSError):
+        benchmark.run('hm-eqa', [question(1), question(2)], Scripted(stop_after=1), tmp_path,
+                      fake_open, {'benchmark': 'hm-eqa', 'agent': 'scripted'},
+                      log=lambda *a: None)
+    text = (tmp_path / 'results.jsonl').read_text()
+    assert text == before and len(benchmark.finished(tmp_path / 'results.jsonl')) == 2
+
+
+def test_a_clean_start_does_not_rewrite_the_results(tmp_path, monkeypatch):
+    fly(tmp_path, Scripted(stop_after=1), [question(1)])
+    writes = []
+    real = benchmark._atomic_write
+    monkeypatch.setattr(benchmark, '_atomic_write', lambda p, t: (writes.append(p), real(p, t)))
+    fly(tmp_path, Scripted(stop_after=1), [question(1)])
+    assert [p.name for p in writes if p.name == 'results.jsonl'] == []
+
+
+def test_stray_files_in_episodes_do_not_stop_a_start(tmp_path):
+    fly(tmp_path, Scripted(stop_after=1), [question(1)])
+    (tmp_path / 'episodes' / 'notes.txt').write_text('hi')
+    (tmp_path / 'episodes' / '7').write_text('not a folder')
+    again = Scripted(stop_after=1)
+    fly(tmp_path, again, [question(1), question(2)])
+    assert again.questions == [2]
+
+
+def test_another_reach_or_chunk_size_in_the_same_folder_is_refused(tmp_path):
+    base = {'benchmark': 'hm-eqa', 'agent': 'scripted', 'chunk_size': 4, 'reach': 0.4}
+    fly(tmp_path, Scripted(stop_after=1), [question(1)], config=base)
+    with pytest.raises(benchmark.Stopped, match='reach'):
+        fly(tmp_path, Scripted(stop_after=1), [question(2)], config={**base, 'reach': 0.8})
+    with pytest.raises(benchmark.Stopped, match='chunk_size'):
+        fly(tmp_path, Scripted(stop_after=1), [question(2)], config={**base, 'chunk_size': 8})
+
+
+def test_a_second_run_in_a_folder_in_use_is_refused(tmp_path):
+    import fcntl
+
+    tmp_path.mkdir(exist_ok=True)
+    with open(tmp_path / '.lock', 'w') as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(benchmark.Stopped, match='already running'):
+            fly(tmp_path, Scripted(stop_after=1), [question(1)])
+    fly(tmp_path, Scripted(stop_after=1), [question(1)])      # released: it runs

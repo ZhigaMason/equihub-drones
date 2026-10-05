@@ -8,9 +8,12 @@ A run is meant to take nights: one benchmark in full is hundreds of questions an
 model calls. So it resumes. Each finished question is one line of results.jsonl, written after
 its episode folder, and a start skips those lines' questions and deletes anything else it
 finds, so a run stopped anywhere -- a usage limit, Ctrl-C, a power cut -- flies the
-interrupted question again from its start next time. It stops at the first failure rather than
-skipping the question: a question that cannot be flown tonight (a usage limit, a scene that
-would not download) is flown tomorrow, not dropped from the score.
+interrupted question again from its start next time. Every line is fsynced, and results.jsonl
+and config.json are only ever replaced whole (written aside, fsynced, renamed), so a power cut
+loses at most the question being flown. One run at a time per folder: a lock file enforces
+it. It stops at the first failure rather than skipping the question: a question that cannot be
+flown tonight (a usage limit, a scene that would not download) is flown tomorrow, not dropped
+from the score.
 
 The budget is counted in decisions, one per model call for the VLM pilot. EQA questions get
 Explore-EQA's int(sqrt(floor area) * 3); IndoorUAV's flights twice their reference length in
@@ -26,7 +29,10 @@ Scoring is drones.sim.scoring; the metrics themselves are drones.sim.metrics.
 """
 import argparse
 import contextlib
+import fcntl
+import functools
 import json
+import os
 import shutil
 import sys
 import time
@@ -40,7 +46,7 @@ RUNS_DIR = Path('runs/benchmarks')
 EQA = ('hm-eqa', 'mt-hm3d', 'express-bench', 'a-eqa')
 TEST_SPLITS = ('test seen', 'test unseen')      # how eqa writes IndoorUAV's split names
 # Settings that change what a result means; a resume must keep them. --questions may change.
-COMPARED = ('benchmark', 'agent', 'agent_args', 'camera', 'eye_height')
+COMPARED = ('benchmark', 'agent', 'agent_args', 'camera', 'eye_height', 'chunk_size', 'reach')
 
 
 class Stopped(Exception):
@@ -86,11 +92,23 @@ def _plain(value):
     return value
 
 
+def _atomic_write(path, text):
+    """Replace `path` with `text` whole: a kill leaves the old file or the new, never a torn
+    one. write_text truncates first, and a kill then loses what the file held."""
+    path = Path(path)
+    aside = path.with_suffix(path.suffix + '.tmp')
+    with open(aside, 'w') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(aside, path)
+
+
 def _check_config(folder, config):
     path = folder / 'config.json'
     config = _plain(config)
     if not path.exists():
-        path.write_text(json.dumps(config, indent=2))
+        _atomic_write(path, json.dumps(config, indent=2))
         return
     old = json.loads(path.read_text())
     changed = [f'{key}: {old.get(key)!r} then, {config.get(key)!r} now'
@@ -104,11 +122,15 @@ def _clean(folder, done):
     """Delete the episode folders of unfinished questions, and fix a torn last line."""
     episodes = folder / 'episodes'
     for path in episodes.iterdir():
-        if not path.name.isdigit() or int(path.name) not in done:
+        # A stray file is none of ours to delete, and rmtree on it would stop every start.
+        if path.is_dir() and (not path.name.isdigit() or int(path.name) not in done):
             shutil.rmtree(path)
     results = folder / 'results.jsonl'
     if results.exists():
-        results.write_text(''.join(json.dumps(row) + '\n' for row in done.values()))
+        canonical = ''.join(json.dumps(row) + '\n' for row in done.values())
+        # Only when a torn line is to go: a rewrite on every start is a window to be killed in.
+        if results.read_text() != canonical:
+            _atomic_write(results, canonical)
 
 
 def _lift(question, eye_height):
@@ -222,6 +244,16 @@ def run(benchmark, questions, agent, folder, open_view, config, eye_height=eqa.E
     at the first failure, with the interrupted question's folder removed."""
     folder = Path(folder)
     (folder / 'episodes').mkdir(parents=True, exist_ok=True)
+    with open(folder / '.lock', 'w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Stopped(f'another drones-benchmark is already running in {folder}') from None
+        # Held until the file closes, which is when this returns or raises.
+        _run(benchmark, questions, agent, folder, open_view, config, eye_height, log)
+
+
+def _run(benchmark, questions, agent, folder, open_view, config, eye_height, log):
     _check_config(folder, config)
     done = finished(folder / 'results.jsonl')
     _clean(folder, done)
@@ -241,6 +273,7 @@ def run(benchmark, questions, agent, folder, open_view, config, eye_height=eqa.E
                     with open(folder / 'results.jsonl', 'a') as f:
                         f.write(json.dumps(_plain(row)) + '\n')
                         f.flush()
+                        os.fsync(f.fileno())
                     log(f'{benchmark} {question.number}: {row["stop"]}, '
                         f'{row["decisions"]}/{row["budget"]} decisions, answer '
                         f'{row["answer"]!r}, truth {row["truth"]!r} ({row["seconds"]:.0f} s)')
@@ -307,10 +340,6 @@ def main(argv=None):
         except ValueError as exc:
             parser.error(f'--questions: {exc}')
     agent_kwargs = render_agent.parse_agent_args(parser, args.agent_arg)
-    try:
-        import drones.sim  # noqa: F401  CrazyFlow first, before anything imports scipy.
-    except ImportError:
-        sys.exit('drones-benchmark needs the sim extra:  uv sync --extra sim')
     from drones.sim import scenes
     from drones.sim.scene_view import SceneView
 
@@ -335,6 +364,8 @@ def main(argv=None):
               'mount': not args.no_mount}
     for name in names:
         config = {'benchmark': name, 'agent': args.agent, 'agent_args': agent_kwargs,
+                  'chunk_size': getattr(agent, 'chunk_size', 1),
+                  'reach': getattr(agent, 'reach', None),
                   'camera': camera, 'eye_height': eye_height, 'questions': args.questions}
         try:
             try:
@@ -345,11 +376,11 @@ def main(argv=None):
                 raise Stopped(f'stopped at {name}: {exc}. Run the same command again to '
                               'resume there.') from exc
             run(name, questions, agent, args.out / f'{name}-{tag}', open_view, config,
-                eye_height, print)
+                eye_height, functools.partial(print, flush=True))
         except Stopped as exc:
             sys.exit(str(exc))
     print('All done. Score with:  drones-benchmark score ' +
-          ' '.join(str(args.out / f'{n}-{tag}') for n in names))
+          ' '.join(str(args.out / f'{n}-{tag}') for n in names), flush=True)
 
 
 def _score(args):
@@ -359,6 +390,7 @@ def _score(args):
     summaries = []
     for folder in args.folders:
         if not (folder / 'results.jsonl').exists():
+            print(f'skipping {folder}: no results.jsonl', file=sys.stderr, flush=True)
             continue
         try:
             summaries.append(scoring.score(folder, scoring.claude_judge(folder, model)))
@@ -366,4 +398,4 @@ def _score(args):
             sys.exit(str(exc))
     if not summaries:
         sys.exit('no run folders with results.jsonl among those given')
-    print(scoring.report(summaries))
+    print(scoring.report(summaries), flush=True)

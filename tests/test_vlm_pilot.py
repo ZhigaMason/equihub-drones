@@ -259,3 +259,16 @@ def test_conclude_that_fails_keeps_the_answer_it_had():
     fly(pilot, CHUNK)
     assert pilot.conclude('last', 1.0) == 'C'
     assert pilot.stats['failed'] == 1
+
+
+def test_every_call_record_holds_the_model_and_system_that_decided_it():
+    class Named(FakeBackend):
+        model, system, resolved_model = 'sonnet', 'You fly.', 'claude-sonnet-5-5'
+
+    pilot = started(Named(FORWARD))
+    pilot.step(0, 1.0)
+    assert (pilot.calls[0]['model'], pilot.calls[0]['system']) == ('claude-sonnet-5-5',
+                                                                    'You fly.')
+    plain = started(FakeBackend(FORWARD))
+    plain.step(0, 1.0)
+    assert (plain.calls[0]['model'], plain.calls[0]['system']) == (None, None)

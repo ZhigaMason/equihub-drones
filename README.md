@@ -962,7 +962,10 @@ at all, and how many questions ran out of budget. Open answers are marked 1 to 5
 (`--judge-model`, sonnet by default) with OpenEQA's own prompt; marks are cached in
 `judged.jsonl`. `report.md` lists where this differs from the papers: Claude as the judge, no
 grounding term, straight-line distances in a scan the drone can fly through, a step that flies
-0.4 m where Explore-EQA's flies 3 m, and a floor area from the scan's vertices.
+0.4 m where Explore-EQA's flies 3 m, and a floor area from the scan's vertices. nDTW is
+computed on both paths resampled every 0.5 m, so it does not depend on sampling density.
+One run per folder at a time (a `.lock` file); `chunk_size` and `reach` are part of a folder's
+settings, so a changed `.env` action size is refused on resume.
 
 What a run writes, under `runs/benchmarks/<benchmark>-<name>/`:
 
@@ -971,8 +974,9 @@ What a run writes, under `runs/benchmarks/<benchmark>-<name>/`:
 - `episodes/<number>/trajectory.npz`: `pos` and `yaw` at every step, and the `reference` path;
 - `episodes/<number>/calls.jsonl` and `calls/<k>.png`: **the distillation data**. One line per
   model call, retries and the final answer included: `step`, `elapsed`, `altitude`, `pos`,
-  `yaw`, the exact `prompt`, the raw `reply`, `attempt`, `valid`, `error`, the parsed `chunk`,
-  `seconds`, `final`, and `image`, the frame the model saw, at the camera's own size.
+  `yaw`, the `prompt` (the user turn; the system prompt is in `system`), `model` (the one the
+  backend reports having run, else the one asked for), `system`, the raw `reply`, `attempt`, `valid`, `error`,
+  the parsed `chunk`, `seconds`, `final`, and `image`, the frame the model saw, at the camera's own size.
 
 ### Measured here
 

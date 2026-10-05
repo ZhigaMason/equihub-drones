@@ -128,3 +128,19 @@ def test_the_report_lists_every_run_and_the_deviations(tmp_path):
     assert 'hm-eqa' in text and 'a-eqa' in text
     for deviation in scoring.DEVIATIONS:
         assert deviation in text
+
+
+def test_a_missing_trajectory_stops_scoring_with_the_question_named(tmp_path):
+    folder = make_run(tmp_path / 'run', 'indoor-uav', [
+        {'number': 3, 'goal': [4.0, 0, 1], 'category': 'traj_1, test seen, easy',
+         'answer': None}])
+    with pytest.raises(benchmark.Stopped, match='question 3: no episodes/3/trajectory.npz'):
+        scoring.score(folder, judge(folder)[0])
+
+
+def test_d_t_of_questions_with_no_target_is_nan_without_a_warning(tmp_path, recwarn):
+    folder = make_run(tmp_path / 'run', 'express-bench', [{'number': 1}])
+    (folder / 'judged.jsonl').write_text('')
+    summary = scoring.score(folder, judge(folder, '4')[0])
+    assert summary['metrics']['d_T (m)'] != summary['metrics']['d_T (m)']
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]

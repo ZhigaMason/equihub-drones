@@ -160,3 +160,11 @@ def test_a_text_only_call_sends_no_image_and_its_own_system_prompt(tmp_path):
     assert message['message']['content'] == [{'type': 'text', 'text': 'Your mark?'}]
     argv = call(tmp_path)['argv']
     assert argv[argv.index('--system-prompt') + 1] == 'You grade answers.'
+
+
+def test_it_records_the_model_the_cli_reports_in_its_init_event(tmp_path):
+    init = {'type': 'system', 'subtype': 'init', 'model': 'claude-sonnet-5-5'}
+    backend = ClaudeCodeBackend(model='sonnet', executable=fake_claude(tmp_path, [init, RESULT]))
+    assert backend.resolved_model is None
+    backend.generate('fly', frame())
+    assert backend.resolved_model == 'claude-sonnet-5-5'

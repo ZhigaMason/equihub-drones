@@ -64,6 +64,8 @@ DEVIATIONS = [
     "The floor area behind the EQA budget is the box of the scan's vertices 0.1 to 2.0 m above "
     "the start's floor, not habitat's navmesh bounds.",
     'A-EQA has no reference path here, so it has no E_path.',
+    'nDTW is computed on both paths resampled every 0.5 m, so that it does not depend on how '
+    'densely the flight is sampled.',
 ]
 
 
@@ -142,8 +144,11 @@ def _row(folder, benchmark, result, judge):
         row['distance'] = float(np.linalg.norm(np.subtract(result['final_pos'],
                                                            result['goal'])))
     if benchmark == 'indoor-uav':
-        trajectory = np.load(Path(folder) / 'episodes' / str(result['number']) /
-                             'trajectory.npz')
+        path = Path(folder) / 'episodes' / str(result['number']) / 'trajectory.npz'
+        if not path.exists():
+            raise Stopped(f'question {result["number"]}: no episodes/{result["number"]}/'
+                          f'trajectory.npz in {folder}')
+        trajectory = np.load(path)
         row.update(metrics.navigation(trajectory['pos'], np.asarray(result['goal'], float)))
         row['ndtw'] = metrics.ndtw(trajectory['reference'], trajectory['pos'])
     return row
@@ -160,7 +165,8 @@ def _metrics(benchmark, rows, results):
         m['LLM-Score C*'] = metrics.llm_score(marks)
         m['E_path'] = metrics.e_path(marks, [x['reference_length'] or 0.0 for x in results],
                                      [x['path_length'] for x in results])
-        m['d_T (m)'] = float(np.mean([r.get('distance', math.nan) for r in rows]))
+        near = [r['distance'] for r in rows if np.isfinite(r.get('distance', math.nan))]
+        m['d_T (m)'] = float(np.mean(near)) if near else math.nan
     if benchmark == 'a-eqa':
         m['LLM-Match'] = metrics.llm_match([r['mark'] for r in rows])
     if benchmark == 'indoor-uav':

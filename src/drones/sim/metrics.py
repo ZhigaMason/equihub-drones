@@ -20,6 +20,7 @@ FLOOR_BAND = (0.1, 2.0)     # m above the floor: the vertices whose box stands i
 DEFAULT_REACH = 0.4         # m one decision flies at most: 16 discrete forwards at 2.5 cm
 SUCCESS_RADIUS = 2.0        # m: IndoorUAV's VLN success
 NDTW_THRESHOLD = 10.0       # IndoorUAV's d_th for VLN
+NDTW_SPACING = 0.5          # m between the points nDTW compares, on both paths
 
 # A letter alone, or opening the answer: B, (B), B), B., B) blue. Not the B of "Blue".
 _LETTER = re.compile(r'^\(?([A-H])\)?(?:[).:,]|\s|$)')
@@ -127,13 +128,38 @@ def dtw(a, b):
     return float(acc[-1, -1])
 
 
+def _distinct(points):
+    """`points` (N, 3) without a point equal to the one before it (yaw-only rows)."""
+    p = np.asarray(points, float).reshape(-1, 3)
+    if len(p) < 2:
+        return p
+    return p[np.r_[True, np.any(np.diff(p, axis=0) != 0, axis=1)]]
+
+
+def resample(points, spacing=NDTW_SPACING):
+    """`points` (N, 3) as points every `spacing` m of arc length along the same polyline, its
+    last point kept; a path of no length is its single point."""
+    p = _distinct(points)
+    if len(p) < 2:
+        return p
+    along = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))]
+    at = np.arange(0.0, along[-1], spacing)
+    if along[-1] - at[-1] < 1e-9:
+        at = at[:-1]
+    at = np.r_[at, along[-1]]
+    return np.stack([np.interp(at, along, p[:, k]) for k in range(3)], axis=1)
+
+
 def ndtw(reference, path, threshold=NDTW_THRESHOLD):
-    """exp(-DTW / (|R| d_th)), |R| the reference's point count, as nDTW was defined for VLN
-    (IndoorUAV writes it L_R). Positions only: the yaw term is IndoorUAV's VLA set's."""
-    reference = np.asarray(reference, float).reshape(-1, 3)
+    """exp(-DTW / (|R| d_th)) as nDTW was defined for VLN (IndoorUAV writes it L_R), on both
+    paths resampled every NDTW_SPACING m. DTW sums a cost per matched point but |R| counts
+    only the reference's, so on raw paths the score fell with how densely the flight was
+    sampled: IndoorUAV's rows are metres apart, ours is a point every 2.5 cm. Positions only:
+    the yaw term is IndoorUAV's VLA set's."""
+    reference = resample(reference)
     if not len(reference):
         return math.nan
-    return math.exp(-dtw(reference, path) / (len(reference) * threshold))
+    return math.exp(-dtw(reference, resample(path)) / (len(reference) * threshold))
 
 
 def navigation(path, goal, radius=SUCCESS_RADIUS):

@@ -107,7 +107,12 @@ class Pilot:
             record = {'step': self._steps, 'elapsed': self._steps * STEP, 'altitude': altitude,
                       'prompt': asked, 'reply': reply, 'attempt': attempt + 1, 'valid': False,
                       'error': None, 'chunk': None, 'seconds': seconds, 'final': final,
-                      'image': image}
+                      'image': image,
+                      # What decided the reply, for the data a smaller pilot is distilled from.
+                      # By attribute: a backend need have none of them.
+                      'model': getattr(self.backend, 'resolved_model', None)
+                      or getattr(self.backend, 'model', None),
+                      'system': getattr(self.backend, 'system', None)}
             self.calls.append(record)
             try:
                 chunk = parse_chunk(reply, self.space, self.size)
