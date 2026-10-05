@@ -883,7 +883,38 @@ this far.
 
 Other `--agent-arg`s: `model=` (any Hugging Face image-text-to-text checkpoint; the default,
 `google/gemma-3n-E2B-it`, is gated, so accept its licence and `hf auth login`, or set `HF_TOKEN`
-in `.env`), `max_new_tokens=`, `start_altitude=`, `constrain=` and `chunk=`.
+in `.env`), `max_new_tokens=`, `start_altitude=`, `constrain=`, `chunk=` and `backend=`.
+
+### Claude as the pilot
+
+`--agent-arg backend=claude-code` asks Claude instead of a local model, through the `claude` CLI
+and the subscription it is logged in to. No API key, no GPU and no `vlm` extra are needed:
+
+```bash
+uv run --extra sim drones-render-agent --scene Albertville --ask 'Find a door and fly towards it.' \
+    --agent drones.vlm.agent:make --agent-arg backend=claude-code \
+    --agent-arg action_space=discrete --fps 16 --steps 48
+```
+
+`--agent-arg model=` takes `sonnet` (the default), `opus`, `haiku` or a full model name. Every
+call is a fresh `claude -p` session in an empty directory, with no tools, no MCP servers, no
+settings or hooks and a two-line system prompt of its own, so the model sees only the frame and
+the prompt the local model would. Its decoding is not constrained; the pilot validates the reply
+as it does any other. A failed call (the CLI missing or logged out, a usage limit) stops the run
+with the CLI's message rather than hovering through it. Calls count against the subscription's
+usage: a 48-step film is three.
+
+Measured on this laptop with `sonnet` (`claude-sonnet-5-5`), three chunks per mode in the
+Albertville scan with "Find a door and fly towards it.":
+
+| Action space | Seconds per call | Valid at once | Valid after the retry | Failed |
+| --- | --- | --- | --- | --- |
+| `discrete` | 3 to 4 | 3 | 0 | 0 |
+| `continuous` | 4 to 5 | 3 | 0 | 0 |
+
+Three chunks are a smoke test, not an evaluation, but unlike the small local models above it
+followed the picture: in discrete mode it turned towards the open doorway on its left and flew at
+it, three `turn_left` and thirteen `forward` in the last chunk.
 
 The agent is given a start pose and no floor, so it takes the start to be `start_altitude` above
 the floor, 1.0 m by default. That matches the habitat benchmarks (`hm-eqa`, `mt-hm3d`,

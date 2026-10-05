@@ -7,10 +7,20 @@ server stand in without touching the pilot.
 `TransformersBackend` runs a Hugging Face image-text-to-text checkpoint in this process. It loads
 nothing until the first frame: torch takes seconds to import and the model longer, and neither is
 needed to build an agent or to import this module.
+
+`ClaudeCodeBackend` asks Claude through the `claude` CLI, so it flies on a Claude subscription
+rather than an API key. That rules out `--bare`, which reads only ANTHROPIC_API_KEY: the CLI
+runs in full and is stripped instead, one flag at a time (see `ClaudeCodeBackend.command`).
 """
+import base64
+import json
 import logging
 import os
+import struct
+import subprocess
 import sys
+import tempfile
+import zlib
 from typing import Protocol
 
 import numpy as np
@@ -27,6 +37,34 @@ MAX_NEW_TOKENS = 768
 # `required` order, so every reply is laid out alike.
 PARSER_CONFIG = {'max_consecutive_whitespaces': 1, 'force_json_field_order': True}
 EXTRA = 'The VLM pilot needs the vlm extra:  uv sync --extra sim --extra camera --extra vlm'
+
+# A `--model` for the claude CLI: an alias (sonnet, opus, haiku) or a full model name.
+CLAUDE_MODEL = 'sonnet'
+# s for one call. One takes a few seconds; the limit is for a CLI that waits on something else.
+CLAUDE_TIMEOUT = 300
+# In place of Claude Code's own system prompt, which is about being a coding agent. The user
+# prompt (vlm/prompt.py) carries the task, so this says only what the reply is.
+CLAUDE_SYSTEM = ('You are the pilot of a simulated drone. Reply with only the JSON the user asks '
+                 'for: no prose, no code fence.')
+CLAUDE_MISSING = ('The Claude Code backend needs the claude CLI, logged in to a subscription: '
+                  'install Claude Code and run `claude` once to log in.')
+
+
+def png(image):
+    """An (height, width, 3) uint8 RGB `image` as PNG bytes. zlib only, so the backend needs
+    neither PIL nor the vlm extra; rows are left unfiltered, which a frame a second can afford."""
+    image = np.ascontiguousarray(image, np.uint8)
+    height, width, _ = image.shape
+
+    def chunk(kind, body):
+        return (struct.pack('>I', len(body)) + kind + body
+                + struct.pack('>I', zlib.crc32(kind + body)))
+
+    rows = np.concatenate([np.zeros((height, 1), np.uint8), image.reshape(height, -1)], axis=1)
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(rows.tobytes()))
+            + chunk(b'IEND', b''))
 
 
 def _vocabulary(pipe):
@@ -139,3 +177,53 @@ class TransformersBackend:
         out = self._pipe(text=messages, max_new_tokens=self.max_new_tokens,
                          generate_kwargs=options)
         return out[0]['generated_text'][-1]['content']
+
+
+class ClaudeCodeBackend:
+    """Claude `model` through the `claude` CLI at `executable`, one fresh, stateless session per
+    call. A call that fails, or takes longer than `timeout` s, raises RuntimeError with the
+    CLI's own message; the pilot does not catch it, so the run stops rather than hovering
+    through, say, a usage limit."""
+
+    def __init__(self, model=CLAUDE_MODEL, executable='claude', timeout=CLAUDE_TIMEOUT):
+        self.model, self.executable, self.timeout = model, executable, float(timeout)
+
+    def command(self):
+        return [self.executable, '-p',
+                # An image can only be sent as a stream-json message, and stream-json in
+                # requires stream-json out, which with -p requires --verbose.
+                '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+                '--model', self.model,
+                '--system-prompt', CLAUDE_SYSTEM,
+                # Nothing but the model. --tools '' leaves the claude.ai MCP connectors in;
+                # --strict-mcp-config with no --mcp-config takes them out. No settings
+                # sources, so no hooks or plugins of the user's or of this repository.
+                '--tools', '', '--strict-mcp-config', '--setting-sources', '',
+                '--disable-slash-commands', '--no-session-persistence']
+
+    def generate(self, prompt, image):
+        message = {'type': 'user', 'message': {'role': 'user', 'content': [
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png',
+                                         'data': base64.b64encode(png(image)).decode()}},
+            {'type': 'text', 'text': prompt}]}}
+        # In an empty directory: in the repository the CLI would read CLAUDE.md, which is
+        # about the code, and spend tokens on it every call.
+        with tempfile.TemporaryDirectory() as cwd:
+            try:
+                out = subprocess.run(self.command(), input=json.dumps(message) + '\n',
+                                     capture_output=True, text=True, cwd=cwd,
+                                     timeout=self.timeout)
+            except FileNotFoundError:
+                raise SystemExit(CLAUDE_MISSING) from None
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f'claude timed out after {self.timeout:.0f} s') from None
+        events = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+        results = [event for event in events if event.get('type') == 'result']
+        if not results:
+            raise RuntimeError(f'claude exited {out.returncode} without a result: '
+                               f'{out.stderr.strip()}')
+        result = results[-1]
+        if result.get('is_error') or out.returncode:
+            raise RuntimeError(f'claude failed ({result.get("subtype")}): '
+                               f'{result.get("result")} {out.stderr.strip()}')
+        return result['result']

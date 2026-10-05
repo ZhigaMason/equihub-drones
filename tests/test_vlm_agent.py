@@ -146,6 +146,7 @@ def test_an_agent_can_fly_a_second_episode():
     {'action_space': 'categorical'},
     {'start_altitude': 'high'},
     {'max_new_tokens': 'many'},
+    {'backend': 'gpt'},
 ])
 def test_a_wrong_argument_is_a_value_error(kwargs):
     # drones-render-agent turns a ValueError from the factory into a usage error.
@@ -321,6 +322,18 @@ def test_make_holds_the_local_model_to_the_chunk_schema_unless_told_not_to():
     # --agent-arg hands over 0 as a number and anything else as text.
     for off in (0, False, 'false', 'no', 'off'):
         assert vlm_agent.make(constrain=off).pilot.backend.schema is None
+
+
+def test_backend_claude_code_flies_on_claude_through_the_cli():
+    from drones.vlm.backend import CLAUDE_MODEL, ClaudeCodeBackend, TransformersBackend
+
+    backend = vlm_agent.make(backend='claude-code').pilot.backend
+    assert isinstance(backend, ClaudeCodeBackend)
+    assert backend.model == CLAUDE_MODEL       # not the Hugging Face default
+    assert vlm_agent.make(backend='claude-code', model='opus').pilot.backend.model == 'opus'
+    local = vlm_agent.make(backend='transformers').pilot.backend
+    assert isinstance(local, TransformersBackend)
+    assert local.model == vlm_agent.DEFAULT_MODEL
 
 
 def test_chunk_sets_how_many_actions_are_flown_between_looks():

@@ -229,7 +229,14 @@ uv run pytest $(grep -L importorskip tests/test_*.py)
   `actions.json_schema` (the pydantic schema with the count pinned) unless `constrain=0`; the
   pilot still validates every reply, because the grammar cannot hold a number's range. Another
   model or a server is a new `Backend` (`generate(prompt, image) -> str`), not a change to
-  `Pilot`. A real-drone adapter
+  `Pilot`, selected by `make(backend=...)`. `Pilot` does not catch a backend's exceptions: a
+  backend that raises stops the run. `ClaudeCodeBackend` (`backend=claude-code`) runs
+  `claude -p` per chunk on the user's subscription. That rules out `--bare`, which reads only
+  `ANTHROPIC_API_KEY`, so the CLI is stripped flag by flag instead: an image goes in only as a
+  stream-json message, which needs stream-json out and `--verbose`; `--tools ''` still leaves
+  the claude.ai MCP connectors in, and only `--strict-mcp-config` takes them out. Its tests use a
+  fake `claude`; a real call spends the user's usage, so ask before making one. A real-drone
+  adapter
   would call `Pilot.step` and pass each Command to `DroneController.set_control`; none exists yet,
   and writing one does not make it something an agent may run. The size of one action comes from
   `drones.config`, so a local `.env` changes how far the simulated drone moves per action and what
@@ -311,7 +318,9 @@ The VLM pilot has no entry point of its own: it is `drones-render-agent --agent
 drones.vlm.agent:make --agent-arg action_space=discrete --fps 16 --steps 48`. One step is 1/16 s,
 so 16 fps is real time. A run loads a local model (`google/gemma-3n-E2B-it`, gated) and is slow
 without a GPU: about a minute per model call, one call per 16 steps, so always pass `--steps` (the
-default 500 is half an hour or more). `--agent-arg chunk=N` (1 to 32) sets the actions per call;
+default 500 is half an hour or more). `--agent-arg backend=claude-code` asks Claude through the
+`claude` CLI instead (a few seconds a call, no `vlm` extra, the user's subscription usage).
+`--agent-arg chunk=N` (1 to 32) sets the actions per call;
 an action is always 1/16 s (`actions.STEP`), so N is how long the model flies open loop, not how
 fast. `CHUNK` is only the default size: pass the size through (`parse_chunk`, `json_schema`,
 `build_prompt`, `Pilot(size=)`) rather than reading `CHUNK`. The tests script the replies
