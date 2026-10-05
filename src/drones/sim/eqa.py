@@ -382,6 +382,19 @@ def locate(benchmark, number, dest=SCENES_DIR):
     return None
 
 
+def split_scenes(splits, dest=SCENES_DIR):
+    """Our ids of the scenes IndoorUAV's trajectories in `splits` (file names from
+    INDOOR_UAV_SPLITS) fly through, for `prepare`: load() returns only prepared scenes."""
+    from drones.sim.scenes import hm3d_index
+
+    folder, ids, index = fetch('indoor-uav', dest), hm3d_index(dest), indoor_uav_index(dest)
+    keys = set()
+    for split in splits:
+        for row in csv.DictReader(open(folder / split, newline='')):
+            keys.add('/'.join(row['traj_path'].strip('/').split('/')[:2]))
+    return sorted(_scene_id(key, ids) for key in keys if key in index)
+
+
 def load(benchmark, dest=SCENES_DIR):
     """Every question of `benchmark`, with scenes named by HM3D id (or Gibson name). For
     indoor-uav, only those of scenes whose prompts `prepare` has fetched."""
