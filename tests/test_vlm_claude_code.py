@@ -151,3 +151,12 @@ def test_a_call_that_hangs_raises(tmp_path):
     script.chmod(0o755)
     with pytest.raises(RuntimeError, match='timed out'):
         ClaudeCodeBackend(executable=str(script), timeout=0.5).generate('fly', frame())
+
+
+def test_a_text_only_call_sends_no_image_and_its_own_system_prompt(tmp_path):
+    backend = ClaudeCodeBackend(executable=fake_claude(tmp_path), system='You grade answers.')
+    assert backend.generate('Your mark?', None) == ' {"done": true} '
+    message = json.loads(call(tmp_path)['stdin'])
+    assert message['message']['content'] == [{'type': 'text', 'text': 'Your mark?'}]
+    argv = call(tmp_path)['argv']
+    assert argv[argv.index('--system-prompt') + 1] == 'You grade answers.'

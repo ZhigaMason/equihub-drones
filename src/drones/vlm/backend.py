@@ -183,10 +183,13 @@ class ClaudeCodeBackend:
     """Claude `model` through the `claude` CLI at `executable`, one fresh, stateless session per
     call. A call that fails, or takes longer than `timeout` s, raises RuntimeError with the
     CLI's own message; the pilot does not catch it, so the run stops rather than hovering
-    through, say, a usage limit."""
+    through, say, a usage limit. `system` replaces the pilot's system prompt, for another use of
+    the same call (a judge); `image` may then be None."""
 
-    def __init__(self, model=CLAUDE_MODEL, executable='claude', timeout=CLAUDE_TIMEOUT):
+    def __init__(self, model=CLAUDE_MODEL, executable='claude', timeout=CLAUDE_TIMEOUT,
+                 system=CLAUDE_SYSTEM):
         self.model, self.executable, self.timeout = model, executable, float(timeout)
+        self.system = system
 
     def command(self):
         return [self.executable, '-p',
@@ -194,18 +197,20 @@ class ClaudeCodeBackend:
                 # requires stream-json out, which with -p requires --verbose.
                 '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
                 '--model', self.model,
-                '--system-prompt', CLAUDE_SYSTEM,
+                '--system-prompt', self.system,
                 # Nothing but the model. --tools '' leaves the claude.ai MCP connectors in;
                 # --strict-mcp-config with no --mcp-config takes them out. No settings
                 # sources, so no hooks or plugins of the user's or of this repository.
                 '--tools', '', '--strict-mcp-config', '--setting-sources', '',
                 '--disable-slash-commands', '--no-session-persistence']
 
-    def generate(self, prompt, image):
-        message = {'type': 'user', 'message': {'role': 'user', 'content': [
-            {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png',
-                                         'data': base64.b64encode(png(image)).decode()}},
-            {'type': 'text', 'text': prompt}]}}
+    def generate(self, prompt, image=None):
+        content = [{'type': 'text', 'text': prompt}]
+        if image is not None:       # a judge asks in words alone
+            content.insert(0, {'type': 'image', 'source': {
+                'type': 'base64', 'media_type': 'image/png',
+                'data': base64.b64encode(png(image)).decode()}})
+        message = {'type': 'user', 'message': {'role': 'user', 'content': content}}
         # In an empty directory: in the repository the CLI would read CLAUDE.md, which is
         # about the code, and spend tokens on it every call.
         with tempfile.TemporaryDirectory() as cwd:
