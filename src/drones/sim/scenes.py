@@ -28,6 +28,7 @@ the state estimate, so the policy's behaviour is unchanged by the scene around i
 import argparse
 import io
 import json
+import os
 import struct
 import sys
 import urllib.request
@@ -171,7 +172,9 @@ def download(names, dest=SCENES_DIR):
             if is_hm3d(name):
                 print(f'{name}: decoding Basis textures', flush=True)
                 blob = debasis_glb(blob)
-            part = target.with_suffix('.glb.part')
+            # Per process: benchmarks flown side by side may fetch the same scene at once,
+            # and two writers of one .part file would interleave. The rename is atomic.
+            part = target.with_suffix(f'.glb.{os.getpid()}.part')
             part.write_bytes(blob)
             part.rename(target)
 

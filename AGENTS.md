@@ -332,7 +332,11 @@ so 16 fps is real time. A run loads a local model (`google/gemma-3n-E2B-it`, gat
 without a GPU: about a minute per model call, one call per 16 steps, so always pass `--steps` (the
 default 500 is half an hour or more). `--agent-arg backend=claude-code` asks Claude through the
 `claude` CLI instead (a few seconds a call, no `vlm` extra, the user's subscription usage).
-`--agent-arg chunk=N` (1 to 32) sets the actions per call;
+`--agent-arg backend=openai --agent-arg model=NAME [url=...]` asks a model a vLLM server serves
+(`vlm/backend.py:OpenAIBackend`, stdlib urllib only); several benchmark processes may share one
+server. The url lands in a benchmark run's compared settings, so a resume must use the same port.
+`scenes.download` writes a per-process `.part` file because such parallel runs fetch the same
+HM3D scenes at once. `--agent-arg chunk=N` (1 to 32) sets the actions per call;
 an action is always 1/16 s (`actions.STEP`), so N is how long the model flies open loop, not how
 fast. `CHUNK` is only the default size: pass the size through (`parse_chunk`, `json_schema`,
 `build_prompt`, `Pilot(size=)`) rather than reading `CHUNK`. The tests script the replies

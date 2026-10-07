@@ -916,6 +916,27 @@ Three chunks are a smoke test, not an evaluation, but unlike the small local mod
 followed the picture: in discrete mode it turned towards the open doorway on its left and flew at
 it, three `turn_left` and thirteen `forward` in the last chunk.
 
+### A model on a vLLM server
+
+`--agent-arg backend=openai` asks a model served over the OpenAI chat API, as `vllm serve` serves
+it. One server answers any number of benchmark processes, so a model too large for this laptop
+is loaded once on a GPU node and every benchmark is flown against it at the same time:
+
+```bash
+vllm serve Qwen/Qwen3.8-27B --port 8000 --limit-mm-per-prompt '{"image": 1, "video": 0}'
+uv run --extra sim drones-benchmark run --benchmark hm-eqa \
+    --agent drones.vlm.agent:make --agent-arg backend=openai \
+    --agent-arg model=Qwen/Qwen3.8-27B --agent-arg url=http://127.0.0.1:8000/v1 \
+    --agent-arg action_space=discrete
+```
+
+`model=` is the name the server serves and is required; `url=` defaults to
+`http://localhost:8000/v1`. Decoding is greedy and held to the chunk's schema by vLLM's
+structured outputs (`constrain=0` frees it), and Qwen's thinking is switched off through
+`chat_template_kwargs`. The url is part of a run folder's compared settings, so serve on the same
+port when a run is resumed. The client needs only the standard library: no torch and no `vlm`
+extra.
+
 The agent is given a start pose and no floor, so it takes the start to be `start_altitude` above
 the floor, 1.0 m by default. That matches the habitat benchmarks (`hm-eqa`, `mt-hm3d`,
 `express-bench`, `a-eqa`) and `--scene`, which start 1.0 m up. It does not match `indoor-uav`,

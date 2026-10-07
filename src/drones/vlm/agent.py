@@ -6,9 +6,9 @@
 The simulator's agent loop asks for the next pose once per step and renders a frame there. One
 step is one action, 1/16 s, so `--fps 16` plays the film in real time; the pilot looks at every
 sixteenth frame. `--agent-arg` takes `action_space` (continuous or discrete), `backend`
-(transformers, or claude-code to fly on a Claude subscription through the claude CLI), `model`
-(a Hugging Face id, or a Claude alias such as sonnet or opus), `start_altitude` and
-`max_new_tokens`.
+(transformers, claude-code to fly on a Claude subscription through the claude CLI, or openai for a
+model a vLLM server serves at `url`), `model` (a Hugging Face id, or a Claude alias such as sonnet
+or opus), `start_altitude` and `max_new_tokens`.
 
 The drone moves kinematically, as the built-in agents do: a Command's forward and yaw are applied
 at the teleop limits from `drones.config`, with no smoothing, no avoidance and nothing to collide
@@ -39,8 +39,8 @@ from drones import config
 from drones.control.mixer import clamp
 from drones.sim.agents import Pose
 from drones.vlm.actions import CHUNK, STEP, ContinuousAction, chunk_size, json_schema
-from drones.vlm.backend import (CLAUDE_MODEL, DEFAULT_MODEL, MAX_NEW_TOKENS, ClaudeCodeBackend,
-                                TransformersBackend)
+from drones.vlm.backend import (CLAUDE_MODEL, DEFAULT_MODEL, MAX_NEW_TOKENS, OPENAI_URL,
+                                ClaudeCodeBackend, OpenAIBackend, TransformersBackend)
 from drones.vlm.pilot import Pilot
 
 ERROR_SHOWN = 200   # characters of a validation error in a progress line
@@ -205,26 +205,33 @@ class VLMAgent:
 
 
 def make(action_space='continuous', model=None, start_altitude=1.0,
-         max_new_tokens=None, backend='transformers', constrain=True, chunk=CHUNK):
+         max_new_tokens=None, backend='transformers', constrain=True, chunk=CHUNK,
+         url=OPENAI_URL):
     """The agent factory. `chunk` actions are flown between looks, 1 to 32, each 1/16 s.
 
     `backend` is where replies come from: 'transformers', a local `model` (a Hugging Face id),
-    or 'claude-code', Claude `model` (sonnet by default, opus, haiku or a full name) through the
-    claude CLI and its subscription login. Any object with `generate` replaces both, for tests.
-    The local model is held to the chunk's schema as it writes, unless `constrain` is 0 (or
-    false, no, off); Claude writes freely, and the pilot validates every reply either way."""
+    'claude-code', Claude `model` (sonnet by default, opus, haiku or a full name) through the
+    claude CLI and its subscription login, or 'openai', `model` as served at `url` (vllm serve).
+    Any object with `generate` replaces them all, for tests. A local or served model is held to
+    the chunk's schema as it writes, unless `constrain` is 0 (or false, no, off); Claude writes
+    freely, and the pilot validates every reply either way."""
     size = chunk_size(chunk)
+    # --agent-arg gives 0 as a number and any other word as text.
+    free = str(constrain).lower() in ('0', 'false', 'no', 'off')
     if backend == 'claude-code':
         backend = ClaudeCodeBackend(model or CLAUDE_MODEL)
-    elif isinstance(backend, str) and backend != 'transformers':
-        raise ValueError(f'backend is transformers or claude-code, not {backend!r}')
+    elif isinstance(backend, str) and backend not in ('transformers', 'openai'):
+        raise ValueError(f'backend is transformers, claude-code or openai, not {backend!r}')
     if max_new_tokens is None:
         # MAX_NEW_TOKENS holds a chunk of the default size; a longer one needs room in
         # proportion, or every reply is cut off at the limit and rejected.
         max_new_tokens = MAX_NEW_TOKENS * max(size, CHUNK) // CHUNK
+    if backend == 'openai':
+        if not model:
+            raise ValueError('backend openai needs the served model, as model=NAME')
+        backend = OpenAIBackend(model, url, max_new_tokens,
+                                schema=None if free else json_schema(action_space, size))
     if backend == 'transformers':
-        # --agent-arg gives 0 as a number and any other word as text.
-        free = str(constrain).lower() in ('0', 'false', 'no', 'off')
         backend = TransformersBackend(model or DEFAULT_MODEL, max_new_tokens,
                                       schema=None if free else json_schema(action_space, size))
     return VLMAgent(Pilot(backend, action_space, size=size), start_altitude)

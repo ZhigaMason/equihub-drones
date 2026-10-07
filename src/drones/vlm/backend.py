@@ -11,6 +11,12 @@ needed to build an agent or to import this module.
 `ClaudeCodeBackend` asks Claude through the `claude` CLI, so it flies on a Claude subscription
 rather than an API key. That rules out `--bare`, which reads only ANTHROPIC_API_KEY: the CLI
 runs in full and is stripped instead, one flag at a time (see `ClaudeCodeBackend.command`).
+
+`OpenAIBackend` asks a model served over the OpenAI chat API, which is what vLLM serves. One
+server can answer several benchmark processes at once, so a large model is loaded once on a
+cluster node rather than once per process; and vLLM's own structured outputs hold the reply to
+the schema, so lm-format-enforcer is not needed. It uses urllib alone: the machine running the
+benchmark needs neither torch nor the vlm extra.
 """
 import base64
 import json
@@ -20,6 +26,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 import zlib
 from typing import Protocol
 
@@ -48,6 +56,11 @@ CLAUDE_SYSTEM = ('You are the pilot of a simulated drone. Reply with only the JS
                  'for: no prose, no code fence.')
 CLAUDE_MISSING = ('The Claude Code backend needs the claude CLI, logged in to a subscription: '
                   'install Claude Code and run `claude` once to log in.')
+
+# Where `vllm serve` listens by default.
+OPENAI_URL = 'http://localhost:8000/v1'
+# s for one call. A busy server queues requests from every process that shares it.
+OPENAI_TIMEOUT = 600
 
 
 def png(image):
@@ -238,3 +251,55 @@ class ClaudeCodeBackend:
             raise RuntimeError(f'claude failed ({result.get("subtype")}): '
                                f'{result.get("result")} {out.stderr.strip()}')
         return result['result']
+
+
+class OpenAIBackend:
+    """`model` served over the OpenAI chat API at `url` (vLLM's `vllm serve`), one stateless
+    request per call. With `schema`, the server holds the reply to it, as `TransformersBackend`
+    does on its own. A request that fails, or takes longer than `timeout` s, raises
+    RuntimeError with the server's message, and the run stops: a dead server is not a
+    reason to hover through a benchmark.
+
+    Greedy, as the local model is, so a frame and a question give one chunk. Qwen's chat
+    template thinks by default, hundreds of tokens before the JSON; `thinking` False asks it
+    not to, through `chat_template_kwargs`, which a template without the switch ignores."""
+
+    def __init__(self, model, url=OPENAI_URL, max_new_tokens=None, schema=None,
+                 timeout=OPENAI_TIMEOUT, thinking=False, system=None):
+        self.model, self.url, self.schema = model, url.rstrip('/'), schema
+        self.max_new_tokens = MAX_NEW_TOKENS if max_new_tokens is None else int(max_new_tokens)
+        self.timeout, self.thinking, self.system = float(timeout), thinking, system
+        self.resolved_model = None      # what the server says it ran
+
+    def request(self, prompt, image=None):
+        """The body of one chat completion request."""
+        content = [{'type': 'text', 'text': prompt}]
+        if image is not None:
+            data = base64.b64encode(png(image)).decode()
+            content.insert(0, {'type': 'image_url',
+                               'image_url': {'url': f'data:image/png;base64,{data}'}})
+        messages = [{'role': 'user', 'content': content}]
+        if self.system:
+            messages.insert(0, {'role': 'system', 'content': self.system})
+        body = {'model': self.model, 'messages': messages, 'temperature': 0.0,
+                'max_tokens': self.max_new_tokens,
+                'chat_template_kwargs': {'enable_thinking': bool(self.thinking)}}
+        if self.schema is not None:
+            body['response_format'] = {'type': 'json_schema', 'json_schema': {
+                'name': 'chunk', 'schema': self.schema, 'strict': True}}
+        return body
+
+    def generate(self, prompt, image=None):
+        call = urllib.request.Request(f'{self.url}/chat/completions',
+                                      data=json.dumps(self.request(prompt, image)).encode(),
+                                      headers={'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(call, timeout=self.timeout) as response:
+                out = json.load(response)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f'{self.url} answered {exc.code}: '
+                               f'{exc.read().decode(errors="replace")[:500]}') from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f'{self.url} did not answer: {exc}') from None
+        self.resolved_model = out.get('model') or self.resolved_model
+        return out['choices'][0]['message']['content'] or ''
