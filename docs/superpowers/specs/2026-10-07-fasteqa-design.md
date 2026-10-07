@@ -138,8 +138,10 @@ On each decision:
    2.0 m above the floor. A hit marks its cell occupied, the cells the ray crossed free (2D
    Bresenham). It is the paper's TSDF projected to the slice it uses, not a TSDF.
 2. **Score** the view: for each target, rel = λ·s(embedder) + (1−λ)·P(yes) from the scorer, where
-   s is the cosine similarity mapped from SigLIP's or CLIP's useful range to [0, 1] by a fixed
-   per-embedder affine fit (recorded where it is defined). Offer the view to `Memory`.
+   s is the embedder's `match`, in [0, 1]: SigLIP's own sigmoid of its scaled cosine (its trained
+   `logit_scale` and `logit_bias`, a probability by construction), or for CLIP, which has no
+   bias, the cosine mapped linearly from its typical range (0.15 to 0.35). Offer the view to
+   `Memory`.
 3. **Room**: the room name whose text embedding is closest to the frame's. If it is in R and the
    room has not been panned, the decision is a **panorama** (LR). The room stays panned until
    the agent has left it (another room tag for two decisions running).
